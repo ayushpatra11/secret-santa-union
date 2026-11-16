@@ -1,0 +1,90 @@
+# Deploys to Cloudflare Pages ONLY after the full CI suite passes.
+#   - Pull requests (from this repo, not forks) -> preview: https://preview.philipwantedagift.pages.dev
+#   - Pushes to main (i.e. merged PRs)          -> production: https://philipwantedagift.com
+# Each deploy applies D1 migrations first and finishes with a live smoke test.
+name: Deploy
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  preview:
+    name: Preview deploy
+    needs: ci
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    concurrency:
+      group: deploy-preview
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Apply D1 migrations (preview database)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply philipwantedagift-preview --env preview --remote
+      - name: Deploy to Pages (preview)
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy public --project-name=philipwantedagift --branch=preview --commit-hash=${{ github.event.pull_request.head.sha }}
+      - name: Smoke test the live preview
+        run: bash scripts/smoke.sh "${{ steps.deploy.outputs.deployment-url }}"
+      - run: echo "Preview deployed to ${{ steps.deploy.outputs.deployment-url }} (alias https://preview.philipwantedagift.pages.dev)" >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    name: Production deploy
+    needs: ci
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://philipwantedagift.com
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Apply D1 migrations (production database)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply philipwantedagift --env production --remote
+      - name: Deploy to Pages (production)
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy public --project-name=philipwantedagift --branch=main --commit-hash=${{ github.sha }}
+      - name: Smoke test production
+        run: bash scripts/smoke.sh "${{ steps.deploy.outputs.deployment-url }}"
