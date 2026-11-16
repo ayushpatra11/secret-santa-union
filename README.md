@@ -138,9 +138,17 @@ nothing reaches production without passing them. **No keys are needed in GitHub.
 
 1. Go to **Storage & Databases → D1 → Create database** and name it **`philipwantedagift`**.
 2. Put its **Database ID** in `wrangler.toml` (`database_id`). Forks: use your own database there.
-3. Open the database → **Console**, paste the whole of
-   [`migrations/0001_init.sql`](migrations/0001_init.sql), and click **Execute**. This
-   creates the tables. Do it once; future migrations are applied the same way.
+3. Create the tables. Run this once from the repo folder:
+
+   ```bash
+   npx wrangler d1 migrations apply philipwantedagift --remote
+   ```
+
+   No terminal? Paste the `CREATE` statements from
+   [`migrations/0001_init.sql`](migrations/0001_init.sql) into the database's **Console**
+   instead, **without the `--` comment lines**. The console joins everything into one
+   line, so a comment would swallow the SQL after it. Check with `/tables`: you should
+   see 10 tables.
 
 ### 3. Add the secrets
 
