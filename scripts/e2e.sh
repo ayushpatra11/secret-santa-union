@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Boots the real site with `wrangler pages dev` on a fresh local database and runs the
+# Boots the real site with `wrangler dev` on a fresh local database and runs the
 # browser journey in e2e/. Emails are printed by the console provider into the log,
 # which is how the test reads login codes and match links.
 set -euo pipefail
@@ -13,7 +13,8 @@ trap 'kill "${PID:-0}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 # A throwaway secret just for this run (never reuse real secrets in tests).
 if [ ! -f .dev.vars ]; then
-  printf 'APP_SECRET=%s\n' "$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")" > .dev.vars
+  printf 'APP_SECRET=%s\nEMAIL_PROVIDER=console\nAPP_URL=http://localhost:%s\n' \
+    "$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")" "$PORT" > .dev.vars
   CREATED_DEV_VARS=1
 fi
 
@@ -23,7 +24,7 @@ if curl -s -o /dev/null "http://localhost:$PORT/"; then
 fi
 
 npx wrangler d1 migrations apply philipwantedagift --local --persist-to "$STATE" > /dev/null
-npx wrangler pages dev public --port "$PORT" --persist-to "$STATE" > "$LOG" 2>&1 &
+npx wrangler dev --port "$PORT" --persist-to "$STATE" > "$LOG" 2>&1 &
 PID=$!
 
 for _ in $(seq 1 60); do

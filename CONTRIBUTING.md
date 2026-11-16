@@ -43,8 +43,9 @@ Playwright's Chromium; install it once with `npx playwright install chromium`.
 
 ## Database changes
 
-Add a new numbered file in `migrations/` (never edit an applied one). Migrations are
-applied automatically by the deploy workflow before each deploy.
+Add a new numbered file in `migrations/` (never edit an applied one). The maintainer
+applies it to the production database (`npm run db:migrate:remote`, or paste it into the
+D1 console) **before** merging the pull request that needs it.
 
 ## Commit style
 

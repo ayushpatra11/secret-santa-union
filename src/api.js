@@ -395,9 +395,10 @@ function cleanDetails(body) {
   };
 }
 
-async function inviteUrl(env, exchange) {
+/** Invite links use the address the site was opened on, so they work on preview links too. */
+async function inviteUrl(env, request, exchange) {
   const token = await decrypt(env, exchange.invite_enc, `invite:${exchange.id}`);
-  return `${(env.APP_URL || '').replace(/\/+$/, '')}/#/join/${token}`;
+  return `${new URL(request.url).origin}/#/join/${token}`;
 }
 
 async function loadExchange(env, id) {
@@ -531,7 +532,7 @@ async function getExchange(request, env, id) {
       creatorName: creator?.display_name || 'The organiser',
       isCreator,
       hasPhoto: !!(await env.DB.prepare('SELECT 1 FROM exchange_photos WHERE exchange_id = ?').bind(id).first()),
-      inviteUrl: isCreator && ex.status === 'open' ? await inviteUrl(env, ex) : null,
+      inviteUrl: isCreator && ex.status === 'open' ? await inviteUrl(env, request, ex) : null,
       mySlotId: mine?.id || null,
       myName: mine?.name || null,
       myWishlist: mine?.wishlist_enc ? await decrypt(env, mine.wishlist_enc, `wishlist:${mine.id}`) : '',
@@ -616,7 +617,7 @@ async function regenerateInvite(request, env, id) {
   await env.DB.prepare(`UPDATE exchanges SET invite_hash = ?, invite_enc = ? WHERE id = ? AND status = 'open'`)
     .bind(await hmac(env, 'invite', invite), await encrypt(env, invite, `invite:${id}`), id)
     .run();
-  return json({ inviteUrl: await inviteUrl(env, { id, invite_enc: await encrypt(env, invite, `invite:${id}`) }) });
+  return json({ inviteUrl: await inviteUrl(env, request, { id, invite_enc: await encrypt(env, invite, `invite:${id}`) }) });
 }
 
 async function leaveExchange(request, env, id) {

@@ -1,4 +1,4 @@
-// Full browser journey against a running `wrangler pages dev` (EMAIL_PROVIDER=console).
+// Full browser journey against a running `wrangler dev` (EMAIL_PROVIDER=console).
 // Four friends sign up with email codes, the organiser creates a session with a group
 // photo, the others join from the invite link, the draw fires, and each person opens
 // their own match in the app (no emails involved).

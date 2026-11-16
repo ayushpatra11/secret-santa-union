@@ -2,18 +2,17 @@
   "name": "philipwantedagift",
   "version": "1.0.0",
   "private": true,
-  "description": "Philip wanted a gift. A private, OTP-secured, peek-proof Secret Santa on Cloudflare Pages + D1.",
+  "description": "Philip wanted a gift. A private, OTP-secured, peek-proof Secret Santa on Cloudflare Workers + D1.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler pages dev public --port 8788",
+    "dev": "wrangler dev --port 8788",
     "db:migrate:local": "wrangler d1 migrations apply philipwantedagift --local",
-    "db:migrate:preview": "wrangler d1 migrations apply philipwantedagift-preview --env preview --remote",
-    "db:migrate:production": "wrangler d1 migrations apply philipwantedagift --env production --remote",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:e2e": "bash scripts/e2e.sh",
-    "check": "npm run lint && npm test && npm run test:e2e"
+    "check": "npm run lint && npm test && npm run test:e2e",
+    "db:migrate:remote": "wrangler d1 migrations apply philipwantedagift --remote"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

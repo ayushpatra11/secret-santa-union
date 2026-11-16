@@ -13,7 +13,7 @@
 > (see [SECURITY.md](SECURITY.md) for anything sensitive).
 
 A tiny, private, delightfully silly **Secret Santa** web app that runs entirely on
-Cloudflare Pages + D1:
+Cloudflare Workers + D1:
 
 - 🔐 **Passwordless sign-in.** Use a 6-digit email code, or _Continue with Google / Apple_.
 - 👤 **One profile, many Secret Santas.** Log in any year and see all your sessions.
@@ -103,7 +103,7 @@ Open <http://localhost:8788>. Locally, emails (login codes and match links) are
 ```bash
 npm run lint      # ESLint + Prettier
 npm test          # unit + API tests against a real local D1 database
-npm run test:e2e  # full browser journey with Playwright against `wrangler pages dev`
+npm run test:e2e  # full browser journey with Playwright against `wrangler dev`
 ```
 
 The suites cover signup and login, the full draw, idempotency and races (double
@@ -115,130 +115,92 @@ outsiders, and organiser powers.
 
 ## Deploying to Cloudflare (step by step)
 
-Everything deploys from GitHub Actions, **only after all tests pass**:
+The app is a single **Cloudflare Worker** (static files + API) connected to this GitHub
+repo, so **Cloudflare builds and deploys by itself**:
 
-- every pull request → a **preview** at `https://preview.philipwantedagift.pages.dev`, which is
-  smoke-tested once it's live
-- every merge to `main` → **production** at `https://philipwantedagift.com`
+- pushes to `main` → **production** at `https://philipwantedagift.com`
+- other branches → **preview URLs**, shown on the pull request
 
-### 1. Create the Cloudflare resources (once)
+GitHub Actions run all the tests on every pull request. Protect `main` (step 6) so
+nothing reaches production without passing them. **No keys are needed in GitHub.**
 
-```bash
-npx wrangler login
-```
+### 1. Connect the repo (once)
 
-```bash
-npx wrangler pages project create philipwantedagift --production-branch main
-```
+1. **Workers & Pages → Create → Import a repository** → pick this repo. Name it
+   `philipwantedagift`.
+2. In **Settings → Build**:
+   - **Build command:** leave empty
+   - **Deploy command:** `npx wrangler deploy`
+   - **Non-production branch deploy command:** `npx wrangler versions upload`
+   - **Builds for non-production branches:** on
 
-```bash
-npx wrangler d1 create philipwantedagift
-```
+### 2. Create the database
 
-```bash
-npx wrangler d1 create philipwantedagift-preview
-```
+1. Go to **Storage & Databases → D1 → Create database** and name it **`philipwantedagift`**.
+2. Copy its **Database ID** into `wrangler.toml`, replacing `REPLACE_WITH_DATABASE_ID`.
+3. Open the database → **Console**, paste the whole of
+   [`migrations/0001_init.sql`](migrations/0001_init.sql), and click **Execute**. This
+   creates the tables. Do it once; future migrations are applied the same way.
 
-Paste the two `database_id`s into `wrangler.toml` (`env.production` and `env.preview`).
-Then attach your domain: **Workers & Pages → philipwantedagift → Custom domains →
-`philipwantedagift.com`**.
+### 3. Add the secrets
 
-> Use a **Direct Upload** Pages project (as created above). Don't connect Cloudflare's
-> own Git integration, or it would deploy without waiting for the tests.
+Go to **Workers & Pages → philipwantedagift → Settings → Variables and Secrets → Add**
+and choose type **Secret**:
 
-### 2. Set the secrets (once per environment)
+| Name            | Value                                                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_SECRET`    | A long random string: at least 44 random characters from a password manager's generator, or `openssl rand -base64 32`. **Save it somewhere safe.** Losing or changing it makes stored emails unreadable. |
+| `EMAIL_API_KEY` | Your Brevo API key (step 4).                                                                                                                                                                             |
+| `EMAIL_FROM`    | `santa@philipwantedagift.com`                                                                                                                                                                            |
 
-Secrets never go in git. Set each one for **production** and again with `--env preview`:
+Optional: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, the Apple keys (step 5), and
+`TURNSTILE_SECRET_KEY` (bot protection).
 
-```bash
-npx wrangler pages secret put APP_SECRET --project-name philipwantedagift
-```
+> Preview versions share production's database and secrets. That's fine for a friends'
+> project, but don't share preview links around.
 
-```bash
-npx wrangler pages secret put APP_SECRET --project-name philipwantedagift --env preview
-```
+### 4. Email for login codes (Brevo, free)
 
-| Secret                                                                  | What it is                                                                                                                                                                                                                            |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APP_SECRET`                                                            | 32 random bytes, base64 (`openssl rand -base64 32`). Master key for encryption and hashing. **Back it up in a password manager. If you lose or change it, every stored email becomes unreadable.** Use a different value for preview. |
-| `EMAIL_API_KEY`                                                         | Your Brevo or Resend API key (see below).                                                                                                                                                                                             |
-| `EMAIL_FROM`                                                            | The verified sender, e.g. `santa@philipwantedagift.com`.                                                                                                                                                                              |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`                              | Optional: enables "Continue with Google".                                                                                                                                                                                             |
-| `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` | Optional: enables "Continue with Apple".                                                                                                                                                                                              |
-| `TURNSTILE_SECRET_KEY`                                                  | Optional: bot protection on the email-code form (also add `TURNSTILE_SITE_KEY` under `vars` in `wrangler.toml`).                                                                                                                      |
+Email is only used to send 6-digit login codes. Matches are never emailed.
 
-### 3. Set up email
-
-Cloudflare Workers can't speak SMTP easily, so the app uses an email **HTTP API**.
-Pick one; both have free tiers that are plenty for a group of friends:
-
-**Option A: Brevo (recommended, works with or without a domain)**
-
-1. Sign up at brevo.com and go to **SMTP & API → API keys**. Create a key and use it as `EMAIL_API_KEY`.
+1. Sign up at brevo.com.
 2. **Senders, domains & dedicated IPs → Domains → Add a domain** → `philipwantedagift.com`.
-   Brevo shows DKIM, SPF and DMARC records. Add them in **Cloudflare DNS**: the domain
-   is already on Cloudflare, so this takes two minutes.
-3. Add a sender, e.g. `santa@philipwantedagift.com`, and use it as `EMAIL_FROM`.
-4. Keep `EMAIL_PROVIDER = "brevo"` in `wrangler.toml`.
+   Add the DNS records Brevo shows in **Cloudflare → philipwantedagift.com → DNS**.
+3. **Senders → Add a sender** → `santa@philipwantedagift.com`. No real inbox is needed.
+4. **SMTP & API → API keys → Generate** and use the key as `EMAIL_API_KEY`.
 
-**Option B: Resend.** Verify the domain the same way, set `EMAIL_PROVIDER = "resend"`,
-and use the Resend API key.
+You don't need a throwaway Gmail: a sender on your own domain delivers better.
+(Resend works too: set `EMAIL_PROVIDER = "resend"` in `wrangler.toml`.)
 
-**Do you need a throwaway Gmail?** Not if you own `philipwantedagift.com`: a sender on
-your own domain with DKIM/SPF has much better deliverability, and no inbox is needed
-because the app never receives mail. A throwaway Gmail is only useful **without a
-domain**: Brevo lets you verify a single sender address. Expect more emails to land in
-spam that way.
+### 5. Optional: Google and Apple sign-in
 
-**Optional extra privacy:** in your provider's settings, turn off or shorten the
-retention of email _content_ logs where possible. They contain login codes (never
-matches: those are never emailed).
+**Google:**
 
-### 4. Optional: "Continue with Google"
+1. In Google Cloud Console, go to **APIs & Services → OAuth consent screen**. Choose
+   External, with the scopes `openid` and `email`.
+2. **Credentials → OAuth client ID → Web application**.
+3. Add the redirect URI `https://philipwantedagift.com/api/auth/oauth/google/callback`.
+4. Add the client ID and secret as the secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
-1. Google Cloud Console → **APIs & Services → OAuth consent screen** → External. Use the
-   scopes `openid` and `email`.
-2. **Credentials → Create credentials → OAuth client ID → Web application**.
-3. Authorised redirect URIs:
-   - `https://philipwantedagift.com/api/auth/oauth/google/callback`
-   - `https://preview.philipwantedagift.pages.dev/api/auth/oauth/google/callback`
-4. Save the client ID and secret as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+**Apple** needs a paid Apple Developer account:
 
-### 5. Optional: "Continue with Apple"
+1. Create a **Services ID** with _Sign in with Apple_, using the domain
+   `philipwantedagift.com` and the return URL
+   `https://philipwantedagift.com/api/auth/oauth/apple/callback`. This Services ID is `APPLE_CLIENT_ID`.
+2. Create a **Key** with _Sign in with Apple_. Its `.p8` contents are `APPLE_PRIVATE_KEY`,
+   its id is `APPLE_KEY_ID`, and your team id is `APPLE_TEAM_ID`.
+3. Under **Sign in with Apple for Email Communication**, register
+   `santa@philipwantedagift.com`, or login codes to "Hide My Email" addresses are dropped.
 
-This needs a paid Apple Developer account.
+### 6. Custom domain and branch protection
 
-1. **Certificates, IDs & Profiles → Identifiers**: create an App ID with _Sign in with
-   Apple_, then a **Services ID**. That Services ID is `APPLE_CLIENT_ID`.
-2. Configure the Services ID: domain `philipwantedagift.com`, return URL
-   `https://philipwantedagift.com/api/auth/oauth/apple/callback`.
-3. **Keys** → create a key with _Sign in with Apple_ and download the `.p8`. Its
-   contents are `APPLE_PRIVATE_KEY`, its id is `APPLE_KEY_ID`, and your team id is `APPLE_TEAM_ID`.
-4. **Important:** people who choose _Hide My Email_ get an `@privaterelay.appleid.com`
-   address. Register your sending domain/address under **Services → Sign in with Apple
-   for Email Communication**, or Apple will silently drop your emails.
-
-### 6. Connect GitHub Actions
-
-In the GitHub repo, go to **Settings → Secrets and variables → Actions** and add:
-
-- `CLOUDFLARE_API_TOKEN`: a token with **Account → Cloudflare Pages: Edit** and
-  **Account → D1: Edit** (nothing else).
-- `CLOUDFLARE_ACCOUNT_ID`
-
-Then go to **Settings → Environments** and create `preview` and `production`. For
-`production`, limit deployment branches to `main`. You can also require your own approval before each deploy.
-
-### 7. Protect the branches
-
-**Settings → Rules → Rulesets**, for `main` **and** `dev`:
-
-- Require a pull request before merging, with code-owner review.
-- Require these status checks to pass: _Lint & format_, _Unit & API tests_,
-  _Browser end-to-end_, _Dependency audit & secret scan_, _Analyze JavaScript_.
-- Block force pushes and deletions.
-
-The flow is: feature branch → PR into `dev` → PR from `dev` into `main` → production.
+- **Workers & Pages → philipwantedagift → Settings → Domains & Routes → Add → Custom
+  domain** → `philipwantedagift.com`. On the same page, turn **Preview URLs** on.
+- In GitHub, go to **Settings → Rules → Rulesets → New branch ruleset** for `main`:
+  - require a pull request
+  - require the status checks _Lint & format_, _Unit & API tests_, _Browser end-to-end_,
+    _Dependency audit & secret scan_ and _Analyze JavaScript_
+  - block force pushes
 
 ---
 
@@ -247,13 +209,12 @@ The flow is: feature branch → PR into `dev` → PR from `dev` into `main` → 
 ```
 public/            static site (index.html, app.js, styles.css, _headers = security headers)
 public/lib/        browser-side crypto (opening your sealed match)
-functions/api/     Cloudflare Pages Function entry point (routes /api/*)
-src/               API, crypto, draw, email, OAuth
+src/               Worker entry (worker.js), API, crypto, draw, email, OAuth
 migrations/        D1 schema
 test/              unit + API tests (node:test, real local D1)
 e2e/               browser tests (Playwright)
-scripts/           e2e runner, post-deploy smoke test
-.github/           CI, CodeQL, deploy workflows, templates
+scripts/           e2e runner
+.github/           CI and CodeQL workflows, templates
 ```
 
 ## Contributing
