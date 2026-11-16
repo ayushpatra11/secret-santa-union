@@ -1,7 +1,7 @@
 // Full browser journey against a running `wrangler pages dev` (EMAIL_PROVIDER=console).
 // Four friends sign up with email codes, the organiser creates a session with a group
 // photo, the others join from the invite link, the draw fires, and each person opens
-// their own match from the link in their email.
+// their own match in the app (no emails involved).
 //
 //   BASE_URL=http://localhost:8788 DEV_LOG=/path/to/wrangler.log node --test e2e/
 //
@@ -116,56 +116,40 @@ test('four friends complete a Secret Santa in the browser', async () => {
 
   const dev = await newUser('Dev');
   await dev.page.goto(invite);
-  const before = log().length;
+  const emailsBefore = log().length;
   await dev.page.getByRole('button', { name: 'Dev', exact: true }).click();
   await dev.page.getByRole('button', { name: /Join as Dev/ }).click();
   await dev.page.getByText('Names have been drawn').waitFor();
 
-  // Each person opens their own email link and reveals their match
-  const mails = await waitFor(() => {
-    const m = [
-      ...log()
-        .slice(before)
-        .matchAll(/Dear (\w+),[\s\S]*?Secret Santa for: (.+)[\s\S]*?Open it in the app: (\S+)/g),
-    ];
-    return m.length >= 4 ? m : null;
-  }, 'four match emails');
-  const seen = new Set();
+  // Everyone opens their match in the app: no emails involved at all.
+  const matches = {};
   for (const person of [ayush, bea, cal, dev]) {
-    const mail = mails.find((m) => m[1] === person.name);
-    assert.ok(mail, `email for ${person.name}`);
-    const giftee = mail[2].trim();
-    assert.notEqual(giftee, person.name);
-    seen.add(giftee);
-    if (person === bea) {
-      // Portal reveal: no email link needed, the browser's device key unlocks it.
-      await person.page.goto(`${BASE}/#/home`);
-      await person.page.getByRole('link', { name: /Flat 4 Chaos/ }).click();
-    } else {
-      await person.page.goto(mail[3]);
-    }
+    await person.page.goto(`${BASE}/#/home`);
+    await person.page.getByRole('link', { name: /Flat 4 Chaos/ }).click();
     await person.page.getByRole('button', { name: /Open your gift/ }).click();
     await person.page.locator('.match .name').waitFor();
-    assert.equal((await person.page.locator('.match .name').textContent()).trim(), giftee);
-    assert.ok(!person.page.url().includes(mail[3].split('/').pop()), 'key never stays in the address bar');
+    matches[person.name] = (await person.page.locator('.match .name').textContent()).trim();
+    assert.notEqual(matches[person.name], person.name, `${person.name} drew themselves`);
     if (person === ayush) await shot(person.page, '05-reveal');
   }
-  assert.equal(seen.size, 4);
+  assert.equal(new Set(Object.values(matches)).size, 4, 'everyone is drawn exactly once');
+  assert.ok(!/Secret Santa for|Dear /.test(log().slice(emailsBefore)), 'no match emails are sent');
 
-  // Without the key (fresh device), the match stays locked even when logged in.
+  // A browser that wasn't used before the draw can't open it, even when logged in.
   const ayushOtherDevice = await browser.newContext();
   await ayushOtherDevice.addCookies(await ayush.context.cookies());
   const p2 = await ayushOtherDevice.newPage();
   await p2.goto(`${BASE}/#/home`);
   await p2.getByRole('link', { name: /Flat 4 Chaos/ }).click();
   await p2.getByRole('button', { name: /Open your gift/ }).click();
-  await p2.getByText(/this browser doesn't hold your key yet/).waitFor();
+  await p2.getByText(/this browser doesn't hold your key/).waitFor();
   assert.equal(await p2.locator('.match .name').count(), 0);
 
-  // Organiser view: locked, delivery statuses, no pairs.
+  // Organiser view: locked, who can open their match, no pairs.
   await ayush.page.goto(`${BASE}/#/home`);
   await ayush.page.getByRole('link', { name: /Flat 4 Chaos/ }).click();
   await ayush.page.getByText('This session is locked').waitFor();
+  await ayush.page.getByText('Can everyone see their match?').waitFor();
   assert.equal(await ayush.page.getByRole('link', { name: 'Edit session' }).count(), 0);
   await shot(ayush.page, '06-organiser-drawn');
 

@@ -1,6 +1,6 @@
 import { ConfigError, decrypt, encrypt, hmac, randomOtp, randomToken, safeEqual } from './crypto.js';
 import { drawPairs } from './draw.js';
-import { assignmentEmail, otpEmail, sendEmail } from './email.js';
+import { otpEmail, sendEmail } from './email.js';
 import { HttpError, assertSameOrigin, cleanText, getCookie, json, normaliseEmail, readJson } from './http.js';
 import { BINDING_COOKIE, configuredProviders, finishOAuth, startOAuth } from './oauth.js';
 import { importDevicePublicKey, wrapForDevice } from './sealing.js';
@@ -100,7 +100,7 @@ async function dispatch(request, env, ctx) {
       if (m === 'POST' && sub === 'leave') return leaveExchange(request, env, id);
       if (m === 'PUT' && sub === 'wishlist') return updateWishlist(request, env, id);
       if (m === 'GET' && sub === 'my-match') return myMatch(request, env, id);
-      if (m === 'POST' && sub === 'redraw') return redraw(request, env, ctx, id);
+      if (m === 'POST' && sub === 'redraw') return redraw(request, env, id);
       if (m === 'GET' && sub === 'photo') return getPhoto(request, env, id);
       if (m === 'PUT' && sub === 'photo') return putPhoto(request, env, id);
       if (m === 'DELETE' && sub === 'photo') return deletePhoto(request, env, id);
@@ -438,6 +438,17 @@ async function listExchanges(request, env) {
   });
 }
 
+/** Taking part needs a device key, or the member could never open their match. */
+async function requireDevice(env, userId) {
+  const d = await env.DB.prepare('SELECT 1 FROM device_keys WHERE user_id = ?').bind(userId).first();
+  if (!d) {
+    throw new HttpError(
+      400,
+      "This browser couldn't create your secret key, so you wouldn't be able to see your match. Please use a normal (not private) browser window.",
+    );
+  }
+}
+
 async function createExchange(request, env) {
   const user = await requireUser(request, env);
   await rateLimit(env, `create:${user.id}`, 10, 60 * 60);
@@ -449,6 +460,7 @@ async function createExchange(request, env) {
   assertUniqueNames(names);
   const selfIndex = Number.isInteger(body.selfIndex) && body.selfIndex >= 0 && body.selfIndex < names.length ? body.selfIndex : null;
   const wishlist = selfIndex !== null ? cleanText(body.wishlist, { field: 'Wishlist', max: 500, optional: true, multiline: true }) : null;
+  if (selfIndex !== null) await requireDevice(env, user.id);
 
   const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM exchanges WHERE creator_id = ?').bind(user.id).first();
   if (count.n >= MAX_EXCHANGES_PER_USER) throw new HttpError(400, 'You have created too many sessions. Delete an old one first.');
@@ -496,7 +508,9 @@ async function getExchange(request, env, id) {
   const user = await requireUser(request, env);
   const ex = await loadExchange(env, id);
   const { results: slots } = await env.DB.prepare(
-    'SELECT id, name, user_id, email_status, wishlist_enc FROM slots WHERE exchange_id = ? ORDER BY position',
+    `SELECT s.id, s.name, s.user_id, s.wishlist_enc,
+            EXISTS (SELECT 1 FROM match_key_wraps w WHERE w.slot_id = s.id) AS can_unlock
+     FROM slots s WHERE s.exchange_id = ? ORDER BY s.position`,
   )
     .bind(id)
     .all();
@@ -527,7 +541,8 @@ async function getExchange(request, env, id) {
         name: s.name,
         joined: !!s.user_id,
         isMe: s.user_id === user.id,
-        ...(isCreator && ex.status === 'drawn' ? { emailStatus: s.email_status } : {}),
+        // Whether this person has a device that can open their match. Says nothing about pairs.
+        ...(isCreator && ex.status === 'drawn' ? { canUnlock: !!s.can_unlock } : {}),
       })),
     },
   });
@@ -575,7 +590,7 @@ async function updateExchange(request, env, ctx, id) {
     );
   }
   await env.DB.batch(stmts);
-  await maybeDraw(env, ctx, id);
+  await maybeDraw(env, id);
   return json({ ok: true });
 }
 
@@ -634,7 +649,6 @@ async function myMatch(request, env, id) {
   const slot = await env.DB.prepare('SELECT id, giftee_enc FROM slots WHERE exchange_id = ? AND user_id = ?').bind(id, user.id).first();
   if (!slot) throw new HttpError(404, 'You are not part of this session.');
   if (!slot.giftee_enc) throw new HttpError(409, "Names haven't been drawn yet.");
-  // Sealed with a key only the member has (from their email link). We cannot open it.
   // Wraps of the one-time key for each of this member's registered devices. Only the
   // browser holding the matching private key can unwrap one.
   const { results: wraps } = await env.DB.prepare(
@@ -647,24 +661,17 @@ async function myMatch(request, env, id) {
 }
 
 /**
- * The server cannot resend a match it does not know. If any email failed (or never
- * went out), the organiser can redraw: everyone gets a brand-new match and a new email.
+ * Last resort if someone can't open their match (e.g. they cleared their browser).
+ * Nobody can read matches, so the only fix is a fresh draw for everyone.
  */
-async function redraw(request, env, ctx, id) {
+async function redraw(request, env, id) {
   const user = await requireUser(request, env);
   const ex = await loadExchange(env, id);
   if (ex.creator_id !== user.id) throw new HttpError(403, 'Only the organiser can do that.');
   if (ex.status !== 'drawn') throw new HttpError(409, "Names haven't been drawn yet.");
-  const stuck = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM slots WHERE exchange_id = ? AND (email_status = 'failed' OR (email_status IN ('pending', 'none') AND ? < ?))`,
-  )
-    .bind(id, ex.drawn_at, now() - 5 * 60 * 1000)
-    .first();
-  if (!stuck.n) throw new HttpError(409, 'Every email was delivered, so there is nothing to redraw.');
-  await rateLimit(env, `redraw:${id}`, 3, 60 * 60);
-  const deliveries = await drawAndSeal(env, id);
-  const result = await deliverMatches(env, id, deliveries, true);
-  return json({ ok: true, ...result });
+  await rateLimit(env, `redraw:${id}`, 3, 24 * 60 * 60);
+  await drawAndSeal(env, id);
+  return json({ ok: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +824,7 @@ async function joinInvite(request, env, ctx, token) {
   const wishlist = cleanText(body.wishlist, { field: 'Wishlist', max: 500, optional: true, multiline: true });
   const ex = await exchangeByInvite(env, token);
   if (ex.status !== 'open') throw new HttpError(409, 'Names for this session have already been drawn.');
+  await requireDevice(env, user.id);
 
   let res;
   try {
@@ -831,7 +839,7 @@ async function joinInvite(request, env, ctx, token) {
     throw err;
   }
   if (res.meta.changes !== 1) throw new HttpError(409, 'Someone has already taken that name. If that was not you, tell the organiser.');
-  const drawn = await maybeDraw(env, ctx, ex.id);
+  const drawn = await maybeDraw(env, ex.id);
   return json({ ok: true, exchangeId: ex.id, drawn });
 }
 
@@ -840,14 +848,14 @@ async function joinInvite(request, env, ctx, token) {
 //
 // Zero-knowledge for the operator: pairings exist in plaintext only in memory during
 // the request that draws them. Each giver's match is encrypted with a brand-new random
-// key that is NOT derived from APP_SECRET and is never stored - it travels only inside
-// that giver's email link (in the URL #fragment, which browsers never send to servers).
-// The database keeps ciphertext the server itself cannot open. So whoever runs the site,
-// even with full database access and every secret, cannot look up who has whom.
+// key that is NOT derived from APP_SECRET and is never stored. The only copies of that
+// key are locked to the giver's own devices (see src/sealing.js); the private keys that
+// unlock them never leave those browsers. So whoever runs the site, even with full
+// database access and every secret, cannot look up who has whom. No emails are sent.
 // ---------------------------------------------------------------------------
 
-/** If every spot is taken, atomically lock the session, draw names and send emails. */
-async function maybeDraw(env, ctx, id) {
+/** If every spot is taken, atomically lock the session and draw names. */
+async function maybeDraw(env, id) {
   const lock = await env.DB.prepare(
     `UPDATE exchanges SET status = 'drawn', drawn_at = ?1 WHERE id = ?2 AND status = 'open'
        AND NOT EXISTS (SELECT 1 FROM slots WHERE exchange_id = ?2 AND user_id IS NULL)
@@ -856,23 +864,14 @@ async function maybeDraw(env, ctx, id) {
     .bind(now(), id)
     .run();
   if (lock.meta.changes !== 1) return false;
-  const deliveries = await drawAndSeal(env, id);
-  ctx.waitUntil(deliverMatches(env, id, deliveries, false).catch((e) => console.error('Sending matches failed:', e.message)));
+  await drawAndSeal(env, id);
   return true;
 }
 
-function bytesToB64url(bytes) {
-  return bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/** Draw pairs, store sealed matches, and return the in-memory email jobs (never persisted). */
+/** Draw pairs and store each match sealed to the giver's devices. */
 async function drawAndSeal(env, id) {
-  const { results: slots } = await env.DB.prepare(
-    `SELECT s.id, s.name, s.wishlist_enc, u.id AS uid, u.email_enc
-     FROM slots s LEFT JOIN users u ON u.id = s.user_id WHERE s.exchange_id = ?`,
-  )
-    .bind(id)
-    .all();
+  const te = new TextEncoder();
+  const { results: slots } = await env.DB.prepare('SELECT id, name, user_id, wishlist_enc FROM slots WHERE exchange_id = ?').bind(id).all();
   const byId = new Map(slots.map((s) => [s.id, s]));
   const pairs = drawPairs(
     slots.map((s) => s.id),
@@ -886,7 +885,6 @@ async function drawAndSeal(env, id) {
     .all();
   // A redraw replaces every earlier sealed match and wrapped key.
   const stmts = [env.DB.prepare('DELETE FROM match_key_wraps WHERE slot_id IN (SELECT id FROM slots WHERE exchange_id = ?)').bind(id)];
-  const deliveries = [];
   for (const [giverId, gifteeId] of pairs) {
     const giver = byId.get(giverId);
     const giftee = byId.get(gifteeId);
@@ -896,16 +894,16 @@ async function drawAndSeal(env, id) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = new Uint8Array(
       await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`match:${giverId}`) },
+        { name: 'AES-GCM', iv, additionalData: te.encode(`match:${giverId}`) },
         key,
-        new TextEncoder().encode(JSON.stringify({ name: giftee.name, wishlist })),
+        te.encode(JSON.stringify({ name: giftee.name, wishlist })),
       ),
     );
     const sealed = new Uint8Array(12 + ct.length);
     sealed.set(iv);
     sealed.set(ct, 12);
-    stmts.push(env.DB.prepare(`UPDATE slots SET giftee_enc = ?, email_status = 'pending' WHERE id = ?`).bind(bytesToB64(sealed), giverId));
-    for (const d of devices.filter((x) => x.user_id === giver.uid)) {
+    stmts.push(env.DB.prepare('UPDATE slots SET giftee_enc = ? WHERE id = ?').bind(bytesToB64(sealed), giverId));
+    for (const d of devices.filter((x) => x.user_id === giver.user_id)) {
       try {
         const { epk, wrapped } = await wrapForDevice(d.public_key, rawKey, giverId, d.id);
         stmts.push(
@@ -917,51 +915,9 @@ async function drawAndSeal(env, id) {
           ),
         );
       } catch {
-        // A corrupt device key only loses that device; the email link still works.
+        // A corrupt device key only loses that one device.
       }
     }
-    deliveries.push({
-      slotId: giverId,
-      giverName: giver.name,
-      uid: giver.uid,
-      emailEnc: giver.email_enc,
-      gifteeName: giftee.name,
-      wishlist,
-      key: bytesToB64url(rawKey),
-    });
   }
   await env.DB.batch(stmts);
-  return deliveries;
-}
-
-async function deliverMatches(env, id, deliveries, isRedraw) {
-  const ex = await loadExchange(env, id);
-  const base = (env.APP_URL || '').replace(/\/+$/, '');
-  let sent = 0;
-  let failed = 0;
-  for (const d of deliveries) {
-    try {
-      if (!d.uid) throw new Error('member account no longer exists');
-      const email = await decrypt(env, d.emailEnc, `email:${d.uid}`);
-      await sendEmail(env, {
-        to: email,
-        toName: d.giverName,
-        ...assignmentEmail(env, {
-          giverName: d.giverName,
-          gifteeName: d.gifteeName,
-          wishlist: d.wishlist,
-          exchange: ex,
-          revealUrl: `${base}/#/reveal/${id}/${d.key}`,
-          isRedraw,
-        }),
-      });
-      await env.DB.prepare(`UPDATE slots SET email_status = 'sent' WHERE id = ?`).bind(d.slotId).run();
-      sent++;
-    } catch (err) {
-      console.error('Match email failed:', err.message);
-      await env.DB.prepare(`UPDATE slots SET email_status = 'failed' WHERE id = ?`).bind(d.slotId).run();
-      failed++;
-    }
-  }
-  return { sent, failed };
 }

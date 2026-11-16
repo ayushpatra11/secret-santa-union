@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformProxy } from 'wrangler';
 import { handle } from '../src/api.js';
+import { generateDeviceKey, openSealedMatch, unwrapMatchKey } from '../public/lib/sealed.js';
 
 export const ORIGIN = 'http://localhost:8788';
 
@@ -92,7 +93,16 @@ export function setup() {
       .find((m) => m.includes('login code'))
       .match(/code is (\d{6})/)[1];
 
-  t.login = async (email, name) => {
+  /** A browser's device key, registered for the given login. */
+  t.addDevice = async (cookie) => {
+    const key = await generateDeviceKey();
+    const r = await t.call('POST', '/devices', { cookie, body: { publicKey: key.publicKey } });
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    return { ...key, id: r.data.deviceId };
+  };
+
+  /** Sign up / log in with an email code. Registers a device key unless { device: false }. */
+  t.login = async (email, name, { device = true } = {}) => {
     const before = t.emails.length;
     const r1 = await t.call('POST', '/auth/request-otp', { body: { email } });
     assert.equal(r1.status, 200, JSON.stringify(r1.data));
@@ -100,17 +110,23 @@ export function setup() {
     assert.equal(r2.status, 200, JSON.stringify(r2.data));
     const cookie = r2.headers.get('set-cookie').split(';')[0];
     if (name) assert.equal((await t.call('PATCH', '/me', { cookie, body: { name } })).status, 200);
-    return { cookie, needsName: r2.data.needsName };
+    return { cookie, needsName: r2.data.needsName, device: device ? await t.addDevice(cookie) : null };
   };
 
-  /** Parse captured match emails into { giverName: { giftee, key, exchangeId } }. */
-  t.matchEmails = (fromIndex = 0) => {
-    const out = [];
-    for (const m of t.emails.slice(fromIndex)) {
-      if (!m.includes('Open it in the app:')) continue;
-      const [, exchangeId, key] = m.match(/#\/reveal\/([A-Za-z0-9_-]{22})\/([A-Za-z0-9_-]{43})/);
-      out.push({ giver: m.match(/Dear (.+),/)[1], giftee: m.match(/Secret Santa for: (.+)/)[1].trim(), key, exchangeId });
-    }
+  /** Open a member's match the way their browser does. Returns { name, wishlist } or null. */
+  t.reveal = async (exchangeId, user, device = user.device) => {
+    const r = await t.call('GET', `/exchanges/${exchangeId}/my-match`, { cookie: user.cookie });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const wrap = device && r.data.wraps.find((w) => w.deviceId === device.id);
+    if (!wrap) return null;
+    const key = await unwrapMatchKey(device.privateKey, wrap, r.data.slotId, device.id);
+    return openSealedMatch(r.data.sealed, key, r.data.slotId);
+  };
+
+  /** { giverName: gifteeName } for every member (as only each member could see it). */
+  t.allMatches = async (exchangeId, usersByName) => {
+    const out = {};
+    for (const [name, u] of Object.entries(usersByName)) out[name] = (await t.reveal(exchangeId, u)).name;
     return out;
   };
 

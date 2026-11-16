@@ -1,3 +1,5 @@
+// Login-code email via Brevo or Resend. (Matches are never emailed: they are only
+// visible in the app, sealed to each member's own devices.)
 // Transactional email via Brevo or Resend (HTTP APIs - Workers can't speak SMTP easily).
 // Set EMAIL_PROVIDER to "brevo", "resend" or "console" (logs instead of sending; dev only).
 
@@ -16,7 +18,7 @@ export async function sendEmail(env, { to, toName, subject, html, text }) {
   const from = env.EMAIL_FROM;
 
   if (provider === 'console') {
-    // Console mode prints email bodies (which can contain matches), so it only works locally.
+    // Console mode prints email bodies (login codes), so it only works locally.
     if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(env.APP_URL || '')) {
       throw new Error('EMAIL_PROVIDER=console is only allowed when APP_URL is localhost.');
     }
@@ -82,48 +84,4 @@ export function otpEmail(env, code) {
   );
   const text = `Your Secret Santa login code is ${code}\nIt expires in 10 minutes. If you didn't ask for it, ignore this email.`;
   return { subject: `${code} is your PhilipWantedAGift.com code`, html, text };
-}
-
-export function assignmentEmail(env, { giverName, gifteeName, wishlist, exchange, revealUrl, isRedraw }) {
-  const appUrl = env.APP_URL || '';
-  const details = [];
-  if (exchange.budget) details.push(['Budget', exchange.budget]);
-  if (exchange.event_date) details.push(['Gift exchange', exchange.event_date]);
-  const rows = details
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:6px 0;color:#8e9cc4;font-family:Arial,sans-serif;font-size:13px">${escapeHtml(k)}</td><td style="padding:6px 0;text-align:right;font-family:Arial,sans-serif;font-size:14px">${escapeHtml(v)}</td></tr>`,
-    )
-    .join('');
-  const html = layout(
-    'Your Secret Santa match',
-    `<p style="font-size:18px;margin:0 0 6px">Dear ${escapeHtml(giverName)},</p>
-${isRedraw ? `<p style="font-family:Arial,sans-serif;font-size:14px;background:#3a1430;border-radius:10px;padding:12px;margin:0 0 14px">Heads up: an email bounced, so the organiser redrew the names. <b>This match replaces any earlier one.</b></p>` : ''}
-<p style="font-family:Arial,sans-serif;font-size:15px;color:#c9d2ee;margin:0 0 22px">Everyone has joined <b style="color:#f6efe2">${escapeHtml(exchange.name)}</b> and the names have been drawn. This year, you are the Secret Santa for&hellip;</p>
-<div style="text-align:center;background:#0b1530;border:1px solid #ffd98a;border-radius:16px;padding:24px 12px;margin:0 0 22px">
-<div style="font-size:30px;line-height:1">🎁</div>
-<div style="font-size:30px;color:#ffd98a;margin-top:10px">${escapeHtml(gifteeName)}</div>
-</div>
-${wishlist ? `<p style="font-family:Arial,sans-serif;font-size:13px;color:#8e9cc4;margin:0 0 6px;text-transform:uppercase;letter-spacing:2px">Their wishlist &amp; hints</p><p style="font-family:Arial,sans-serif;font-size:15px;white-space:pre-wrap;background:#0b1530;border-radius:12px;padding:14px;margin:0 0 22px">${escapeHtml(wishlist)}</p>` : ''}
-${rows ? `<table role="presentation" width="100%" style="border-top:1px solid #2a3c6e;margin:0 0 18px">${rows}</table>` : ''}
-${exchange.message ? `<p style="font-style:italic;color:#c9d2ee;margin:0 0 18px">&ldquo;${escapeHtml(exchange.message)}&rdquo;</p>` : ''}
-<div style="text-align:center;margin:0 0 20px"><a href="${escapeHtml(revealUrl)}" style="display:inline-block;background:#f2c36b;color:#3a2405;font-family:Arial,sans-serif;font-weight:bold;text-decoration:none;padding:13px 22px;border-radius:12px">Open my gift in the app 🎁</a></div>
-<p style="font-family:Arial,sans-serif;font-size:14px;color:#c9d2ee;margin:0">Keep it secret, keep it safe. 🤫 Nobody else can see who you got: not the organiser, not even whoever runs this website. Your match is locked with a key that exists only in this email, so <b>keep this email</b>.</p>`,
-    appUrl,
-  );
-  const text = [
-    `Dear ${giverName},`,
-    '',
-    isRedraw ? 'An email bounced, so the names were redrawn. This match replaces any earlier one.\n' : '',
-    `Everyone has joined "${exchange.name}" and the names have been drawn.`,
-    `You are the Secret Santa for: ${gifteeName}`,
-    wishlist ? `\nTheir wishlist & hints:\n${wishlist}` : '',
-    exchange.budget ? `\nBudget: ${exchange.budget}` : '',
-    exchange.event_date ? `Gift exchange: ${exchange.event_date}` : '',
-    exchange.message ? `\n"${exchange.message}"` : '',
-    '',
-    `Open it in the app: ${revealUrl}`,
-    'Keep it secret! Nobody else can see who you got. Keep this email - the link above is the only key to your match.',
-  ].join('\n');
-  return { subject: `🎅 Your Secret Santa match for ${exchange.name}`, html, text };
 }

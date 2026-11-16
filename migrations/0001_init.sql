@@ -4,8 +4,9 @@
 --     (email_hash) for lookups and an AES-256-GCM ciphertext (email_enc) so the
 --     server can send mail. Both keys are derived from the APP_SECRET env secret.
 --   * OTP codes, login tokens and invite tokens are stored only as HMAC hashes.
---   * Assignments (who gifts whom) are encrypted and bound to the giver's slot,
---     and no API ever returns another person's assignment - not even to the creator.
+--   * Matches (who gifts whom) are sealed with one-time keys that only exist locked
+--     to each member's own devices (see device_keys below). Nobody else, including
+--     the operator with every secret, can open them. No API returns anyone else's.
 
 CREATE TABLE users (
   id           TEXT PRIMARY KEY,
@@ -46,7 +47,7 @@ CREATE TABLE exchanges (
   message     TEXT,
   invite_hash TEXT NOT NULL UNIQUE,
   invite_enc  TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'open',  -- open | drawn
+  status      TEXT NOT NULL DEFAULT 'open',  -- open | drawn (locked)
   created_at  INTEGER NOT NULL,
   drawn_at    INTEGER
 );
@@ -61,7 +62,6 @@ CREATE TABLE slots (
   user_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
   wishlist_enc TEXT,
   giftee_enc   TEXT,
-  email_status TEXT NOT NULL DEFAULT 'none', -- none | pending | sent | failed
   claimed_at   INTEGER,
   UNIQUE (exchange_id, user_id)
 );
@@ -88,4 +88,28 @@ CREATE TABLE exchange_photos (
   mime        TEXT NOT NULL,
   data_enc    TEXT NOT NULL,
   updated_at  INTEGER NOT NULL
+);
+
+-- Portal reveal without trusting the server.
+--
+-- Each browser a member signs in on generates an ECDH P-256 key pair. The private
+-- key is created non-extractable and stays in that browser's IndexedDB; only the
+-- public key is stored here. At the draw, each giver's one-time match key is
+-- wrapped (ECIES: ephemeral ECDH + HKDF-SHA256 + AES-256-GCM) to every device the
+-- giver has registered. The server can wrap but never unwrap.
+
+CREATE TABLE device_keys (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  public_key  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_device_keys_user ON device_keys(user_id);
+
+CREATE TABLE match_key_wraps (
+  slot_id    TEXT NOT NULL REFERENCES slots(id) ON DELETE CASCADE,
+  device_id  TEXT NOT NULL REFERENCES device_keys(id) ON DELETE CASCADE,
+  epk        TEXT NOT NULL,
+  wrapped    TEXT NOT NULL,
+  PRIMARY KEY (slot_id, device_id)
 );

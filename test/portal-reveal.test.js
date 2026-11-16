@@ -1,30 +1,34 @@
-// The portal reveal: members can see their match in the app even if the email never
-// arrives, while the server still cannot read it (device-held private keys).
+// Matches are only visible in the app, unlocked by each member's own device keys.
+// The server can lock a match to a device, but never unlock it.
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeKey, generateDeviceKey, openSealedMatch, unwrapMatchKey } from '../public/lib/sealed.js';
+import { unwrapMatchKey } from '../public/lib/sealed.js';
 import { setup } from './helpers.js';
 
 const t = setup();
 
-async function device(cookie) {
-  const key = await generateDeviceKey();
-  const r = await t.call('POST', '/devices', { cookie, body: { publicKey: key.publicKey } });
-  assert.equal(r.status, 201, JSON.stringify(r.data));
-  return { ...key, id: r.data.deviceId };
+async function drawnSession(tag, names) {
+  const users = {};
+  for (const n of names) users[n] = await t.login(`${tag}-${n.toLowerCase()}@example.com`, n);
+  const created = await t.call('POST', '/exchanges', { cookie: users[names[0]].cookie, body: { name: tag, names, selfIndex: 0 } });
+  const exId = created.data.id;
+  const ex = (await t.call('GET', `/exchanges/${exId}`, { cookie: users[names[0]].cookie })).data.exchange;
+  const token = ex.inviteUrl.split('#/join/')[1];
+  return { exId, token, users, slots: ex.slots };
 }
 
-async function openOnPortal(exId, cookie, dev) {
-  const r = await t.call('GET', `/exchanges/${exId}/my-match`, { cookie });
-  assert.equal(r.status, 200);
-  const wrap = r.data.wraps.find((w) => w.deviceId === dev.id);
-  if (!wrap) return null;
-  const key = await unwrapMatchKey(dev.privateKey, wrap, r.data.slotId, dev.id);
-  return openSealedMatch(r.data.sealed, key, r.data.slotId);
+async function joinAll({ token, users, slots }, names) {
+  for (const n of names) {
+    const r = await t.call('POST', `/invites/${token}/join`, {
+      cookie: users[n].cookie,
+      body: { slotId: slots.find((s) => s.name === n).id },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  }
 }
 
-describe('portal reveal', () => {
+describe('devices', () => {
   test('rejects junk device keys', async () => {
     const u = await t.login('junk@example.com', 'Junk');
     for (const publicKey of [undefined, 'abc', btoa('x'.repeat(65)), 'A'.repeat(500)]) {
@@ -33,96 +37,79 @@ describe('portal reveal', () => {
     assert.equal((await t.call('POST', '/devices', { body: { publicKey: 'abc' } })).status, 401);
   });
 
-  test('everyone sees their match in the app, matching the email, without the email link', async () => {
-    const names = ['Ana', 'Bob', 'Cid', 'Dia'];
-    const users = {};
-    for (const n of names) {
-      users[n] = await t.login(`portal-${n}@example.com`, n);
-      users[n].device = await device(users[n].cookie);
-    }
-    // Ana has a second device (e.g. a phone) too.
-    users.Ana.phone = await device(users.Ana.cookie);
-    const created = await t.call('POST', '/exchanges', { cookie: users.Ana.cookie, body: { name: 'Portal', names, selfIndex: 0 } });
-    const exId = created.data.id;
-    const ex = (await t.call('GET', `/exchanges/${exId}`, { cookie: users.Ana.cookie })).data.exchange;
+  test("you can't join (or take part as organiser) without a device that could open your match", async () => {
+    const org = await t.login('nodev-org@example.com', 'Org', { device: false });
+    const asSelf = await t.call('POST', '/exchanges', {
+      cookie: org.cookie,
+      body: { name: 'x', names: ['Org', 'B', 'C', 'D'], selfIndex: 0 },
+    });
+    assert.equal(asSelf.status, 400);
+    // Organising without taking part is fine.
+    const created = await t.call('POST', '/exchanges', { cookie: org.cookie, body: { name: 'x', names: ['A', 'B', 'C', 'D'] } });
+    assert.equal(created.status, 201);
+    const ex = (await t.call('GET', `/exchanges/${created.data.id}`, { cookie: org.cookie })).data.exchange;
     const token = ex.inviteUrl.split('#/join/')[1];
-    const before = t.emails.length;
-    for (const n of names.slice(1)) {
-      const slotId = ex.slots.find((s) => s.name === n).id;
-      await t.call('POST', `/invites/${token}/join`, { cookie: users[n].cookie, body: { slotId } });
-    }
-    await t.flush();
-    const mails = t.matchEmails(before);
-    assert.equal(mails.length, 4);
+    const noDevice = await t.login('nodev-member@example.com', 'NoDevice', { device: false });
+    const r = await t.call('POST', `/invites/${token}/join`, { cookie: noDevice.cookie, body: { slotId: ex.slots[0].id } });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /secret key/);
+  });
+});
 
-    for (const n of names) {
-      const fromPortal = await openOnPortal(exId, users[n].cookie, users[n].device);
-      const mail = mails.find((m) => m.giver === n);
-      assert.equal(fromPortal.name, mail.giftee, `${n}: portal and email agree`);
-    }
-    assert.equal((await openOnPortal(exId, users.Ana.cookie, users.Ana.phone)).name, mails.find((m) => m.giver === 'Ana').giftee);
+describe('portal reveal', () => {
+  test('every device registered before the draw can open the match; later ones cannot', async () => {
+    const s = await drawnSession('multi', ['Ana', 'Bob', 'Cid', 'Dia']);
+    const phone = await t.addDevice(s.users.Ana.cookie);
+    await joinAll(s, ['Bob', 'Cid', 'Dia']);
+    const laptop = await t.reveal(s.exId, s.users.Ana);
+    assert.ok(laptop);
+    assert.deepEqual(await t.reveal(s.exId, s.users.Ana, phone), laptop, 'second device sees the same match');
+    const late = await t.addDevice(s.users.Ana.cookie);
+    assert.equal(await t.reveal(s.exId, s.users.Ana, late), null, 'a device added after the draw gets nothing');
+    const view = (await t.call('GET', `/exchanges/${s.exId}`, { cookie: s.users.Ana.cookie })).data.exchange;
+    assert.ok(view.slots.every((x) => x.canUnlock));
+  });
 
-    // Another person's private key cannot unwrap your key, even if they got the wrap.
-    const bobView = (await t.call('GET', `/exchanges/${exId}/my-match`, { cookie: users.Bob.cookie })).data;
-    await assert.rejects(unwrapMatchKey(users.Cid.device.privateKey, bobView.wraps[0], bobView.slotId, users.Bob.device.id));
-    // ...and you only ever receive wraps for your own devices.
+  test("keys are bound to their slot and device, and can't be opened by anyone else", async () => {
+    const s = await drawnSession('bind', ['Eli', 'Fen', 'Gia', 'Hob']);
+    await joinAll(s, ['Fen', 'Gia', 'Hob']);
+    const fen = (await t.call('GET', `/exchanges/${s.exId}/my-match`, { cookie: s.users.Fen.cookie })).data;
     assert.deepEqual(
-      bobView.wraps.map((w) => w.deviceId),
-      [users.Bob.device.id],
+      fen.wraps.map((w) => w.deviceId),
+      [s.users.Fen.device.id],
+      'you only ever receive wraps for your own devices',
     );
-    // Wrapped keys cannot be replayed for another slot or device id (bound via HKDF info + AAD).
-    await assert.rejects(unwrapMatchKey(users.Bob.device.privateKey, bobView.wraps[0], 'another-slot-id-xxxxxx', users.Bob.device.id));
+    // Someone else's private key can't unwrap it, and the wrap can't be replayed elsewhere.
+    await assert.rejects(unwrapMatchKey(s.users.Gia.device.privateKey, fen.wraps[0], fen.slotId, s.users.Fen.device.id));
+    await assert.rejects(unwrapMatchKey(s.users.Fen.device.privateKey, fen.wraps[0], 'another-slot-id-xxxxxx', s.users.Fen.device.id));
+    await assert.rejects(unwrapMatchKey(s.users.Fen.device.privateKey, fen.wraps[0], fen.slotId, 'another-device-id-xxxx'));
+  });
 
-    // A device registered after the draw gets nothing (the email link still works there).
-    const late = await device(users.Dia.cookie);
-    assert.equal(await openOnPortal(exId, users.Dia.cookie, late), null);
-    const diaMail = mails.find((m) => m.giver === 'Dia');
-    const diaView = (await t.call('GET', `/exchanges/${exId}/my-match`, { cookie: users.Dia.cookie })).data;
-    assert.equal((await openSealedMatch(diaView.sealed, decodeKey(diaMail.key), diaView.slotId)).name, diaMail.giftee);
+  test('a redraw replaces every match and old keys stop working', async () => {
+    const s = await drawnSession('redraw', ['Ike', 'Jas', 'Kai', 'Lux']);
+    await joinAll(s, ['Jas', 'Kai', 'Lux']);
+    const oldView = (await t.call('GET', `/exchanges/${s.exId}/my-match`, { cookie: s.users.Jas.cookie })).data;
+    assert.equal(
+      (await t.call('POST', `/exchanges/${s.exId}/redraw`, { cookie: s.users.Jas.cookie })).status,
+      403,
+      'members cannot redraw',
+    );
+    assert.equal((await t.call('POST', `/exchanges/${s.exId}/redraw`, { cookie: s.users.Ike.cookie })).status, 200);
+    const newView = (await t.call('GET', `/exchanges/${s.exId}/my-match`, { cookie: s.users.Jas.cookie })).data;
+    assert.notEqual(newView.sealed, oldView.sealed);
+    assert.equal(newView.wraps.length, 1);
+    const all = await t.allMatches(s.exId, s.users);
+    assert.equal(new Set(Object.values(all)).size, 4);
+    for (const [g, r] of Object.entries(all)) assert.notEqual(g, r);
+    // The organiser's redraw is rate-limited, so it can't be used to "roll" repeatedly.
+    for (let i = 0; i < 2; i++) await t.call('POST', `/exchanges/${s.exId}/redraw`, { cookie: s.users.Ike.cookie });
+    assert.equal((await t.call('POST', `/exchanges/${s.exId}/redraw`, { cookie: s.users.Ike.cookie })).status, 429);
   });
 
   test('the database never holds anything that opens a match', async () => {
-    const { results: wraps } = await t.env.DB.prepare('SELECT * FROM match_key_wraps').all();
     const { results: devices } = await t.env.DB.prepare('SELECT * FROM device_keys').all();
-    assert.ok(wraps.length > 0);
-    // Public keys are 65-byte uncompressed points: no private key material is ever sent.
+    // Public keys are 65-byte uncompressed P-256 points: no private key material is ever sent.
     for (const d of devices) assert.equal(atob(d.public_key).length, 65);
-  });
-
-  test('a match is still shown on the portal when every email bounces', async () => {
-    const saved = t.env.APP_URL;
-    const names = ['Eli', 'Fen', 'Gia', 'Hob'];
-    const users = {};
-    for (const n of names) {
-      users[n] = await t.login(`bounce-${n}@example.com`, n);
-      users[n].device = await device(users[n].cookie);
-    }
-    const created = await t.call('POST', '/exchanges', { cookie: users.Eli.cookie, body: { name: 'Bounce', names, selfIndex: 0 } });
-    const exId = created.data.id;
-    const ex = (await t.call('GET', `/exchanges/${exId}`, { cookie: users.Eli.cookie })).data.exchange;
-    const token = ex.inviteUrl.split('#/join/')[1];
-    for (const n of names.slice(1, 3)) {
-      await t.call('POST', `/invites/${token}/join`, { cookie: users[n].cookie, body: { slotId: ex.slots.find((s) => s.name === n).id } });
-    }
-    // Break email delivery (console mode refuses non-localhost URLs) for the draw.
-    t.env.APP_URL = 'https://broken.example';
-    try {
-      await t.call('POST', `/invites/${token}/join`, {
-        cookie: users.Hob.cookie,
-        body: { slotId: ex.slots.find((s) => s.name === 'Hob').id },
-      });
-      await t.flush();
-    } finally {
-      t.env.APP_URL = saved;
-    }
-    const view = (await t.call('GET', `/exchanges/${exId}`, { cookie: users.Eli.cookie })).data.exchange;
-    assert.ok(view.slots.every((s) => s.emailStatus === 'failed'));
-    const seen = new Set();
-    for (const n of names) {
-      const m = await openOnPortal(exId, users[n].cookie, users[n].device);
-      assert.ok(m && m.name !== n);
-      seen.add(m.name);
-    }
-    assert.equal(seen.size, 4, 'everyone still gets a valid, distinct match');
+    assert.ok((await t.env.DB.prepare('SELECT COUNT(*) AS n FROM match_key_wraps').first()).n > 0);
   });
 });

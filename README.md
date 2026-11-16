@@ -21,8 +21,8 @@ Cloudflare Pages + D1:
   **quirky group photo**, then list the people taking part and share one invite link.
 - 🙋 **Friends** open the link, sign in, pick their own name and add a wishlist.
 - ✨ **The draw is automatic.** The moment the last person joins, names are drawn,
-  the session locks, and everyone can open their match **right in the app**. They also
-  get an email, but the app works even if the email never arrives.
+  the session locks, and everyone opens their match **right in the app**. No match
+  emails are ever sent: email is only used for login codes.
 - 🤫 **Nobody can peek.** Not other members, not the organiser, and not even whoever
   runs the website. Details below.
 - 🧑‍🎄 Organisers can edit the people list, or delete the session, until it fills up. After that it's locked forever.
@@ -34,8 +34,8 @@ Cloudflare Pages + D1:
 | Who                                  | What they can see                                                               |
 | ------------------------------------ | ------------------------------------------------------------------------------- |
 | Other members                        | The session details and which names have joined. **Never** emails, never pairs. |
-| The organiser                        | The same, plus whether each match email was delivered. **Never** pairs.         |
-| You                                  | Your own match, unlocked by _your_ browser's private key or your email link.    |
+| The organiser                        | The same, plus whether each person can open their match. **Never** pairs.       |
+| You                                  | Your own match, unlocked by _your_ browser's private key.                       |
 | The site operator (DB + all secrets) | Ciphertext. **Cannot** decrypt anyone's match.                                  |
 
 - **Emails are encrypted at rest** (AES-256-GCM). Lookups use a keyed HMAC "blind
@@ -43,17 +43,13 @@ Cloudflare Pages + D1:
 - **Login codes, session tokens and invite links are stored only as HMAC hashes.**
   Codes expire after 10 minutes, are single-use and are attempt-limited. Every
   sensitive endpoint is rate-limited.
-- **Matches are sealed so only you can open them, in the app or from your email.**
-  At the draw, each person's match is encrypted with a fresh random 256-bit key, which
-  is then handed out in only two ways:
-  1. **To your browser.** Every browser you sign in on creates its own key pair. The
-     private half is _non-extractable_ and never leaves the browser; the server only
-     knows the public half. Your match key is locked (ECIES: P-256 ECDH + HKDF + AES-GCM)
-     to each of your devices, so the app can show your match even if the email bounced.
-  2. **In your email link**, after the `#`, so browsers never send it to any server.
-
-  The key is then thrown away. The database keeps only ciphertext and locked keys that
-  the server itself can't open.
+- **Matches are sealed so only your own browser can open them.** Every browser you sign
+  in on creates its own key pair. The private half is _non-extractable_ and never leaves
+  the browser; the server only knows the public half. At the draw, each person's match
+  is encrypted with a fresh random 256-bit key, which is locked (ECIES: P-256 ECDH +
+  HKDF + AES-GCM) to each browser that person had signed in on, then thrown away. The
+  database keeps only ciphertext and locked keys that the server itself can't open.
+  No match is ever emailed, logged or shown to anyone else.
 
 - **The draw leaks nothing.** It's not just "nobody draws themselves". Knowing who
   _you_ drew tells you nothing about who drew _you_: every other person, including
@@ -67,8 +63,9 @@ Cloudflare Pages + D1:
   every state-changing request.
 
 The honest limits are in [SECURITY.md](SECURITY.md#threat-model). The short version:
-the match email itself contains your giftee's name, so whoever can read your inbox,
-or the email provider's logs, can see it.
+open your match on a browser you used **before the draw**. If you clear it (or only
+ever used a private window), nobody can recover your match, and the organiser has to
+redraw for everyone.
 
 ---
 
@@ -194,8 +191,8 @@ domain**: Brevo lets you verify a single sender address. Expect more emails to l
 spam that way.
 
 **Optional extra privacy:** in your provider's settings, turn off or shorten the
-retention of email _content_ logs where possible, and don't browse them. They can
-contain match emails.
+retention of email _content_ logs where possible. They contain login codes (never
+matches: those are never emailed).
 
 ### 4. Optional: "Continue with Google"
 

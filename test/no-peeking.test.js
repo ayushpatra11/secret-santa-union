@@ -3,7 +3,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeKey, openSealedMatch } from '../public/lib/sealed.js';
+import { openSealedMatch, unwrapMatchKey } from '../public/lib/sealed.js';
 import { setup } from './helpers.js';
 
 const t = setup();
@@ -102,7 +102,6 @@ describe('idempotency and races', () => {
     await t.call('POST', `/invites/${s.token}/join`, { cookie: s.users.Ben.cookie, body: { slotId: s.slotOf.Ben } });
     await t.call('POST', `/invites/${s.token}/join`, { cookie: s.users.Dot.cookie, body: { slotId: s.slotOf.Dot } });
     const intruder = await t.login('race-intruder@example.com', 'Intruder');
-    const before = t.emails.length;
     const results = await Promise.all([
       t.call('POST', `/invites/${s.token}/join`, { cookie: s.users.Cat.cookie, body: { slotId: s.slotOf.Cat } }),
       t.call('POST', `/invites/${s.token}/join`, { cookie: intruder.cookie, body: { slotId: s.slotOf.Cat } }),
@@ -110,7 +109,8 @@ describe('idempotency and races', () => {
     await t.flush();
     assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
     assert.equal(results.filter((r) => r.data.drawn).length, 1);
-    assert.equal(t.matchEmails(before).length, 4, 'exactly one email per person');
+    const matches = await t.allMatches(s.id, s.users);
+    assert.equal(new Set(Object.values(matches)).size, 4, 'exactly one valid draw');
   });
 
   test('the same person double-clicking join cannot claim two names', async () => {
@@ -124,21 +124,20 @@ describe('idempotency and races', () => {
     assert.equal(ex.slots.filter((x) => x.joined).length, 2, 'organiser + Eli only');
   });
 
-  test('a session is drawn once: repeating requests never re-draws or re-sends', async () => {
+  test('a session is drawn once: repeating requests never re-draw or change anything', async () => {
     const s = await fullSession('once', ['Hal', 'Ivy', 'Jo', 'Kit']);
-    const first = t.matchEmails().filter((m) => m.exchangeId === s.id);
-    assert.equal(first.length, 4);
-    const before = t.emails.length;
+    const first = await t.allMatches(s.id, s.users);
+    const sealedBefore = (await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.users.Ivy.cookie })).data;
     const attempts = await Promise.all([
       t.call('PATCH', `/exchanges/${s.id}`, { cookie: s.org.cookie, body: {} }),
       t.call('PATCH', `/exchanges/${s.id}`, { cookie: s.org.cookie, body: { addNames: ['Kai'] } }),
       t.call('POST', `/invites/${s.token}/join`, { cookie: s.users.Ivy.cookie, body: { slotId: s.slotOf.Ivy } }),
-      t.call('POST', `/exchanges/${s.id}/redraw`, { cookie: s.org.cookie }),
       t.call('POST', `/exchanges/${s.id}/leave`, { cookie: s.users.Jo.cookie }),
     ]);
     await t.flush();
     for (const a of attempts) assert.ok(a.status === 409 || a.status === 404, `expected refusal, got ${a.status}`);
-    assert.equal(t.emails.length, before, 'no emails sent by repeated requests');
+    assert.deepEqual(await t.allMatches(s.id, s.users), first, 'matches unchanged');
+    assert.deepEqual((await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.users.Ivy.cookie })).data, sealedBefore);
   });
 
   test('fetching your sealed match repeatedly returns the exact same bytes', async () => {
@@ -152,33 +151,34 @@ describe('idempotency and races', () => {
   test('many concurrent creates/joins keep every invariant', async () => {
     const names = Array.from({ length: 12 }, (_, i) => `P${i}`);
     const s = await fullSession('bulk', names, { join: false });
-    const before = t.emails.length;
     const r = await Promise.all(
       names.slice(1).map((n) => t.call('POST', `/invites/${s.token}/join`, { cookie: s.users[n].cookie, body: { slotId: s.slotOf[n] } })),
     );
     await t.flush();
     assert.ok(r.every((x) => x.status === 200));
     assert.equal(r.filter((x) => x.data.drawn).length, 1);
-    const mails = t.matchEmails(before);
-    assert.equal(mails.length, 12);
-    assert.equal(new Set(mails.map((m) => m.giftee)).size, 12, 'everyone receives exactly once');
-    for (const m of mails) assert.notEqual(m.giver, m.giftee);
+    const matches = await t.allMatches(s.id, s.users);
+    assert.equal(Object.keys(matches).length, 12);
+    assert.equal(new Set(Object.values(matches)).size, 12, 'everyone receives exactly once');
+    for (const [giver, giftee] of Object.entries(matches)) assert.notEqual(giver, giftee);
   });
 });
 
 describe('no peeking', () => {
   test('no API response, for anyone, ever contains a pairing', async () => {
     const s = await fullSession('peek', ['Oli', 'Pam', 'Quin', 'Rae']);
-    const mails = t.matchEmails().filter((m) => m.exchangeId === s.id);
-    for (const [name, u] of Object.entries(s.users)) {
+    for (const u of Object.values(s.users)) {
       const view = await t.call('GET', `/exchanges/${s.id}`, { cookie: u.cookie });
       assertNoLeak(view.data);
       const list = await t.call('GET', '/exchanges', { cookie: u.cookie });
       assertNoLeak(list.data);
       // The sealed blob is opaque: it must not contain the giftee's name.
       const mine = await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: u.cookie });
-      const myGiftee = mails.find((m) => m.giver === name).giftee;
-      assert.ok(!JSON.stringify(mine.data).includes(myGiftee));
+      const myGiftee = (await t.reveal(s.id, u)).name;
+      // (Decode first: a short name can appear by chance inside base64 text.)
+      for (const blob of [mine.data.sealed, ...mine.data.wraps.map((w) => w.wrapped)]) {
+        assert.ok(!atob(blob).includes(myGiftee), 'plaintext giftee name inside the ciphertext');
+      }
       assert.deepEqual(Object.keys(mine.data).sort(), ['sealed', 'slotId', 'wraps']);
     }
   });
@@ -187,7 +187,10 @@ describe('no peeking', () => {
     const s = await fullSession('org', ['Sam', 'Tia', 'Uma', 'Val'], { organiserJoins: false });
     const r = await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.org.cookie });
     assert.equal(r.status, 404);
-    assert.equal((await t.call('POST', `/exchanges/${s.id}/redraw`, { cookie: s.org.cookie })).status, 409);
+    // Even after redrawing (which they're allowed to do), they still can't see anything.
+    assert.equal((await t.call('POST', `/exchanges/${s.id}/redraw`, { cookie: s.org.cookie })).status, 200);
+    assert.equal((await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.org.cookie })).status, 404);
+    assertNoLeak((await t.call('GET', `/exchanges/${s.id}`, { cookie: s.org.cookie })).data);
   });
 
   test('members cannot redraw, delete, edit, or reopen', async () => {
@@ -201,17 +204,21 @@ describe('no peeking', () => {
 
   test("you cannot open anyone else's match, even with the right session id", async () => {
     const s = await fullSession('keys', ['Yas', 'Zed', 'Abe', 'Bix']);
-    const mails = t.matchEmails().filter((m) => m.exchangeId === s.id);
     const zed = (await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.users.Zed.cookie })).data;
-    for (const m of mails.filter((x) => x.giver !== 'Zed')) {
-      await assert.rejects(openSealedMatch(zed.sealed, decodeKey(m.key), zed.slotId), 'foreign key opened a match');
+    // No one else's device key can unwrap Zed's match key.
+    for (const [name, u] of Object.entries(s.users)) {
+      if (name === 'Zed') continue;
+      await assert.rejects(
+        unwrapMatchKey(u.device.privateKey, zed.wraps[0], zed.slotId, s.users.Zed.device.id),
+        `${name} opened Zed's key`,
+      );
     }
     // Swapping slot ids (AAD) also fails, so ciphertexts cannot be shuffled around.
-    const yasMail = mails.find((m) => m.giver === 'Yas');
     const yas = (await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: s.users.Yas.cookie })).data;
-    await assert.rejects(openSealedMatch(yas.sealed, decodeKey(yasMail.key), zed.slotId));
-    const opened = await openSealedMatch(yas.sealed, decodeKey(yasMail.key), yas.slotId);
-    assert.equal(opened.name, yasMail.giftee);
+    const yasKey = await unwrapMatchKey(s.users.Yas.device.privateKey, yas.wraps[0], yas.slotId, s.users.Yas.device.id);
+    await assert.rejects(openSealedMatch(zed.sealed, yasKey, zed.slotId), "Yas's key opened Zed's match");
+    await assert.rejects(openSealedMatch(yas.sealed, yasKey, zed.slotId));
+    assert.ok((await openSealedMatch(yas.sealed, yasKey, yas.slotId)).name);
   });
 
   test('outsiders get nothing: not the session, the match, the photo, or the invite', async () => {
@@ -242,14 +249,22 @@ describe('no peeking', () => {
 
   test('database rows hold no readable pairings, wishlists, emails or tokens', async () => {
     const s = await fullSession('db', ['Kim', 'Lea', 'Max', 'Nia']);
-    await t.flush();
-    const mails = t.matchEmails().filter((m) => m.exchangeId === s.id);
-    const tables = ['users', 'slots', 'exchanges', 'otps', 'auth_sessions', 'rate_limits', 'oauth_states', 'exchange_photos'];
+    const tables = [
+      'users',
+      'slots',
+      'exchanges',
+      'otps',
+      'auth_sessions',
+      'rate_limits',
+      'oauth_states',
+      'exchange_photos',
+      'device_keys',
+      'match_key_wraps',
+    ];
     let dump = '';
     for (const tb of tables) dump += JSON.stringify((await t.env.DB.prepare(`SELECT * FROM ${tb}`).all()).results);
     assert.ok(!dump.includes('@example.com'), 'plaintext email in DB');
     assert.ok(!dump.includes(s.token), 'plaintext invite token in DB');
-    for (const m of mails) assert.ok(!dump.includes(m.key), 'match key stored in DB');
     // The slots table must not link a giver row to a giftee name in clear text.
     const slots = (await t.env.DB.prepare('SELECT * FROM slots WHERE exchange_id = ?').bind(s.id).all()).results;
     for (const row of slots) {
@@ -258,17 +273,7 @@ describe('no peeking', () => {
     }
   });
 
-  test('match emails go only to the giver, and OTP emails never contain matches', async () => {
-    const before = t.emails.length;
-    const s = await fullSession('mail', ['Ned', 'Oz', 'Pia', 'Quo']);
-    const mails = t.matchEmails(before).filter((m) => m.exchangeId === s.id);
-    assert.equal(mails.length, 4);
-    for (const m of t.emails.slice(before).filter((x) => x.includes('login code'))) {
-      assert.ok(!m.includes('Secret Santa for'));
-    }
-  });
-
-  test('console email mode refuses to run outside localhost (it would log matches)', async () => {
+  test('console email mode refuses to run outside localhost (it would log login codes)', async () => {
     const saved = t.env.APP_URL;
     t.env.APP_URL = 'https://philipwantedagift.com';
     try {

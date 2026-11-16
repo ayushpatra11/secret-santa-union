@@ -1,7 +1,7 @@
 // Secret Santa - single page app. No build step, no third-party JS, strict CSP.
 // All user-provided text is escaped by the `html` tagged template below.
 
-import { decodeKey, openSealedMatch, unwrapMatchKey } from './lib/sealed.js';
+import { openSealedMatch, unwrapMatchKey } from './lib/sealed.js';
 import { ensureDevice } from './lib/device.js';
 
 // ---------------------------------------------------------------------------
@@ -39,22 +39,6 @@ function mount(tpl) {
   window.scrollTo({ top: 0 });
 }
 
-const store = {
-  get(k) {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  set(k, v) {
-    try {
-      localStorage.setItem(k, v);
-    } catch {
-      /* private mode */
-    }
-  },
-};
 const session = {
   get(k) {
     try {
@@ -354,7 +338,6 @@ const routes = [
   [/^#\/s\/([A-Za-z0-9_-]{22})$/, (m) => auth(() => viewSession(m[1]))],
   [/^#\/s\/([A-Za-z0-9_-]{22})\/edit$/, (m) => auth(() => viewEdit(m[1]))],
   [/^#\/join\/([A-Za-z0-9_-]{43})$/, (m) => auth(() => viewJoin(m[1]))],
-  [/^#\/reveal\/([A-Za-z0-9_-]{22})\/([A-Za-z0-9_-]{43})$/, (m) => captureRevealKey(m[1], m[2])],
 ];
 
 function auth(fn) {
@@ -406,6 +389,8 @@ const QUIPS = [
   'Certified 100% Philip-approved encryption.',
   'Philip says: "socks are a valid gift". Philip is right.',
 ];
+const NO_DEVICE =
+  "This browser can't store your secret key (private window or blocked storage?), so you couldn't see your match later. Please use a normal browser window.";
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
 
 function viewError(message) {
@@ -454,15 +439,15 @@ async function viewLogin(params = new URLSearchParams()) {
           <li>
             <span class="ico" aria-hidden="true">🤫</span
             ><span
-              ><b>Nobody can peek at the pairs</b>Not the organiser, not whoever runs this site. Your match is locked with a key that only
-              exists in your email.</span
+              ><b>Nobody can peek at the pairs</b>Not the organiser, not whoever runs this site. Your match is locked to your own devices,
+              and only you can open it.</span
             >
           </li>
           <li>
             <span class="ico" aria-hidden="true">✨</span
             ><span
-              ><b>Draws itself</b>The moment the last person joins, names are drawn and everyone gets an email. Zero admin, maximum
-              chaos.</span
+              ><b>Draws itself</b>The moment the last person joins, names are drawn and everyone sees their match right here. Zero admin,
+              maximum chaos.</span
             >
           </li>
         </ul>
@@ -927,7 +912,7 @@ function viewNew() {
     if (names.length < 4) return toast('Add at least 4 people. With only 3, everyone could work out who has whom!', 'error');
     busy($('button[type=submit]', e.target), async () => {
       const selfVal = $('#self').value;
-      await state.device; // make sure this browser can unlock the match later
+      if ($('#self').value !== '' && !(await state.device)) throw new Error(NO_DEVICE);
       const { id } = await api('POST', '/exchanges', {
         ...readDetails(),
         names: names.map((n) => n.name),
@@ -1039,7 +1024,7 @@ async function viewSession(id) {
   const joined = ex.slots.filter((s) => s.joined).length;
   const pct = Math.round((joined / ex.slots.length) * 100);
   const drawn = ex.status === 'drawn';
-  const failed = drawn && ex.isCreator ? ex.slots.filter((s) => s.emailStatus === 'failed').length : 0;
+  const locked = drawn && ex.isCreator ? ex.slots.filter((s) => !s.canUnlock).length : 0;
 
   mount(
     html` ${banner(ex, `/api/exchanges/${id}/photo`)}
@@ -1096,7 +1081,9 @@ async function viewSession(id) {
                       <span><b>${joined}</b><small>of ${ex.slots.length}</small></span>
                     </div>
                   </div>
-                  <p class="muted">Names are drawn automatically the moment everyone has joined. Then everyone gets an email.</p>
+                  <p class="muted">
+                    Names are drawn automatically the moment everyone has joined. Then everyone opens their match right here.
+                  </p>
                 </div>`
               : html`<div class="card">
                   <div class="lock-note">
@@ -1126,7 +1113,7 @@ async function viewSession(id) {
             ex.mySlotId && !drawn
               ? html`<div class="card">
                   <h3 class="card-title">Your wishlist</h3>
-                  <p class="faint">Whoever draws you will see this in their email.</p>
+                  <p class="faint">Whoever draws you will see this with your name.</p>
                   <textarea id="wishlist" maxlength="500" placeholder="Hints for your Secret Santa">${ex.myWishlist}</textarea>
                   <div class="actions end card-gap-sm"><button class="btn btn-sm" id="save-wish">Save wishlist</button></div>
                 </div>`
@@ -1135,28 +1122,22 @@ async function viewSession(id) {
           ${
             ex.isCreator && drawn
               ? html`<div class="card">
-                  <h3 class="card-title">Email delivery</h3>
+                  <h3 class="card-title">Can everyone see their match?</h3>
                   <div class="statuses">
                     ${ex.slots.map(
                       (s) =>
                         html`<div>
                           <span>${s.name}</span
-                          ><span class="pill ${s.emailStatus === 'sent' ? 'green' : s.emailStatus === 'failed' ? 'berry' : ''}"
-                            >${{ sent: 'Sent', failed: 'Failed', pending: 'Sending…', sending: 'Sending…' }[s.emailStatus] || '-'}</span
-                          >
+                          ><span class="pill ${s.canUnlock ? 'green' : 'berry'}">${s.canUnlock ? '✓ Ready' : 'No device'}</span>
                         </div>`,
                     )}
                   </div>
-                  ${
-                    failed
-                      ? html`<p class="faint">
-                            No panic: everyone can still open their match right here in the app, on the device they joined with. Nobody (not
-                            you, not us) can read matches, so failed emails can't be re-sent. Only redraw if someone can't see theirs in the
-                            app either: everyone then gets a fresh match.
-                          </p>
-                          <button class="btn btn-gold btn-block" id="redraw">Redraw and email everyone</button>`
-                      : ''
-                  }
+                  <p class="faint">
+                    ${locked ? html`<b>${locked} ${locked === 1 ? 'person has' : 'people have'} no device that can open their match.</b> ` : ''}Matches
+                    are locked to each person's own browser, so nobody (not you, not us) can read or re-send them. If someone can't see
+                    theirs, the only fix is a fresh draw for everyone.
+                  </p>
+                  <button class="btn ${locked ? 'btn-gold' : 'btn-ghost'} btn-sm" id="redraw">Redraw for everyone</button>
                 </div>`
               : ''
           }
@@ -1220,7 +1201,7 @@ async function viewSession(id) {
   $('#delete')?.addEventListener('click', async (e) => {
     const ok = await confirmDialog({
       title: 'Delete this session?',
-      body: "This removes it for everyone, for good. Matches that were already emailed stay in people's inboxes.",
+      body: "This removes it for everyone, for good, including everyone's matches.",
       confirm: 'Delete forever',
       danger: true,
       typeToConfirm: 'DELETE',
@@ -1235,14 +1216,14 @@ async function viewSession(id) {
   $('#redraw')?.addEventListener('click', async (e) => {
     const ok = await confirmDialog({
       title: 'Redraw all names?',
-      body: 'Everyone gets a brand new match (in the app and by email). Earlier matches stop being valid, so only do this if someone really cannot see theirs.',
+      body: "Everyone gets a brand new match and the old ones disappear. Only do this if someone really can't see theirs, and tell everyone to check again!",
       confirm: 'Redraw',
       danger: true,
     });
     if (ok)
       busy(e.target, async () => {
-        const r = await api('POST', `/exchanges/${id}/redraw`);
-        toast(`Redrawn: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''}.`, r.failed ? 'error' : 'ok');
+        await api('POST', `/exchanges/${id}/redraw`);
+        toast('Names redrawn. Tell everyone to open their new match!', 'ok');
         route();
       });
   });
@@ -1259,30 +1240,22 @@ async function revealMatch(id) {
   };
   try {
     const { sealed, slotId, wraps } = await api('GET', `/exchanges/${id}/my-match`);
-    // 1) This browser's device key (works even if the email never arrived).
-    // 2) The key from the email link, if it was opened on this device.
-    const candidates = [];
+    // Only this browser's private device key can unlock the match.
     const device = await state.device;
     const wrap = device && wraps.find((w) => w.deviceId === device.id);
-    if (wrap) candidates.push(() => unwrapMatchKey(device.privateKey, wrap, slotId, device.id));
-    const keyText = store.get(`ss-key:${id}`);
-    if (keyText) candidates.push(async () => decodeKey(keyText));
-
     let match = null;
-    for (const getKey of candidates) {
+    if (wrap) {
       try {
-        match = await openSealedMatch(sealed, await getKey(), slotId);
-        break;
+        match = await openSealedMatch(sealed, await unwrapMatchKey(device.privateKey, wrap, slotId, device.id), slotId);
       } catch {
-        /* try the next key */
+        /* falls through to the message below */
       }
     }
     if (!match) {
       return say(
         html`<p class="muted">
-          🔑 Your match is locked so that only you can open it, and this browser doesn't hold your key yet. Open the
-          <b>"Open my gift in the app"</b> button in your Secret Santa email on this device, or open the app on the device you used to join.
-          ${candidates.length ? html`<br />If the names were redrawn, use the newest email.` : ''}
+          🔑 Your match is locked so that only you can open it, and this browser doesn't hold your key. Open this page on the device and
+          browser you used <b>before the names were drawn</b>. If that's gone, ask the organiser to redraw.
         </p>`,
       );
     }
@@ -1305,13 +1278,6 @@ async function revealMatch(id) {
   } catch (err) {
     toast(err.message, 'error');
   }
-}
-
-/** Email link: #/reveal/<sessionId>/<key>. Keep the key on this device and drop it from the URL. */
-function captureRevealKey(id, key) {
-  store.set(`ss-key:${id}`, key);
-  history.replaceState(null, '', `#/s/${id}`);
-  route();
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,12 +1326,12 @@ async function viewJoin(token) {
   );
   $('#join').addEventListener('click', (e) =>
     busy(e.target, async () => {
-      await state.device; // make sure this browser can unlock the match later
+      if (!(await state.device)) throw new Error(NO_DEVICE);
       const r = await api('POST', `/invites/${token}/join`, { slotId: picked, wishlist: $('#wish').value });
       if (r.drawn) {
         confetti();
         toast('You were the last one in! Names have been drawn. Open your gift below 🎁', 'ok');
-      } else toast("You're in! When everyone has joined, your match appears here (and in your email).", 'ok');
+      } else toast("You're in! When everyone has joined, your match appears right here. Use this same browser to open it.", 'ok');
       go(`#/s/${r.exchangeId}`);
     }),
   );
