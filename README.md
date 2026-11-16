@@ -137,7 +137,7 @@ nothing reaches production without passing them. **No keys are needed in GitHub.
 ### 2. Create the database
 
 1. Go to **Storage & Databases → D1 → Create database** and name it **`philipwantedagift`**.
-2. Copy its **Database ID** into `wrangler.toml`, replacing `REPLACE_WITH_DATABASE_ID`.
+2. Put its **Database ID** in `wrangler.toml` (`database_id`). Forks: use your own database there.
 3. Open the database → **Console**, paste the whole of
    [`migrations/0001_init.sql`](migrations/0001_init.sql), and click **Execute**. This
    creates the tables. Do it once; future migrations are applied the same way.

@@ -26,7 +26,7 @@ APP_URL = "https://philipwantedagift.com"
 [[d1_databases]]
 binding = "DB"
 database_name = "philipwantedagift"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "82bf818d-f706-4c41-a4d8-dc347ce02e5a"
 migrations_dir = "migrations"
 
 [observability]
