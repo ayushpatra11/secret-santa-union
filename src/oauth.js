@@ -9,7 +9,7 @@
 //   * we only accept emails the provider marks as verified
 //   * redirect_uri is built from APP_URL, never from the request's Host header
 
-import { hmac, randomToken } from './crypto.js';
+import { ConfigError, hmac, randomToken } from './crypto.js';
 import { HttpError } from './http.js';
 
 const PROVIDERS = {
@@ -35,10 +35,26 @@ export function configuredProviders(env) {
   return Object.keys(PROVIDERS).filter((p) => PROVIDERS[p].configured(env));
 }
 
+/**
+ * Local development and the browser tests can't sign in to real Google, so they point
+ * "Google" at a fake provider (e2e/fake-oidc.js) via DEV_OAUTH_BASE. This is refused
+ * unless the site itself runs on localhost, so it can never be switched on in production.
+ */
+function devOverride(env, name) {
+  if (!env.DEV_OAUTH_BASE || name !== 'google') return null;
+  if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(env.APP_URL || '')) {
+    throw new ConfigError('DEV_OAUTH_BASE is only allowed when APP_URL is localhost.');
+  }
+  const base = env.DEV_OAUTH_BASE.replace(/\/+$/, '');
+  if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(base)) throw new ConfigError('DEV_OAUTH_BASE must be a localhost URL.');
+  return { authUrl: `${base}/authorize`, tokenUrl: `${base}/token`, issuers: [base] };
+}
+
 function getProvider(env, name) {
   const p = PROVIDERS[name];
   if (!p || !p.configured(env)) throw new HttpError(404, 'This sign-in method is not enabled');
-  return p;
+  const dev = devOverride(env, name);
+  return dev ? { ...p, ...dev } : p;
 }
 
 function appUrl(env) {
@@ -155,7 +171,7 @@ export async function finishOAuth(env, name, { code, state, binding }) {
   }
   const verified = claims.email_verified === true || claims.email_verified === 'true';
   if (!claims.email || !verified) {
-    throw new HttpError(400, 'Your account has no verified email address. Please use the email code login instead.');
+    throw new HttpError(400, "Your account has no verified email address, so we can't recognise you. Please try the other sign-in option.");
   }
   return { email: claims.email, returnTo: row.return_to };
 }

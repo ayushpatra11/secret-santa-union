@@ -548,26 +548,6 @@ select {
   display: block;
 }
 
-.otp {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin: 6px 0 18px;
-}
-.otp input {
-  text-align: center;
-  font: 600 24px/1 var(--display);
-  padding: 14px 0;
-  width: 100%;
-  max-width: 54px;
-}
-@media (max-width: 380px) {
-  .otp input {
-    font-size: 20px;
-    padding: 12px 0;
-  }
-}
-
 /* ---------- dashboard ---------- */
 .page-head {
   display: flex;

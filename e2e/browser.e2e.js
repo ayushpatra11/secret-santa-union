@@ -1,33 +1,20 @@
-// Full browser journey against a running `wrangler dev` (EMAIL_PROVIDER=console).
-// Four friends sign up with email codes, the organiser creates a session with a group
-// photo, the others join from the invite link, the draw fires, and each person opens
-// their own match in the app (no emails involved).
+// Full browser journey against a running `wrangler dev`, signing in through the fake
+// local Google in e2e/fake-oidc.js. Four friends sign up, the organiser creates a session
+// with a group photo, the others join from the invite link, the draw fires, and each
+// person opens their own match in the app. No emails exist anywhere in this flow.
 //
-//   BASE_URL=http://localhost:8788 DEV_LOG=/path/to/wrangler.log node --test e2e/
-//
-// DEV_LOG is the wrangler output file, where the console email provider prints emails.
+//   BASE_URL=http://localhost:8788 node --test e2e/   (or just: npm run test:e2e)
 
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL || 'http://localhost:8788';
-const LOG = process.env.DEV_LOG;
 const SHOTS = process.env.SCREENSHOT_DIR;
 const run = Date.now().toString(36);
 let browser;
 
-const log = () => readFileSync(LOG, 'utf8');
-async function waitFor(fn, what, ms = 15000) {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = fn();
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`Timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 200));
-  }
-}
 async function shot(page, name) {
   if (!SHOTS) return;
   mkdirSync(SHOTS, { recursive: true });
@@ -35,7 +22,6 @@ async function shot(page, name) {
 }
 
 before(async () => {
-  assert.ok(LOG, 'DEV_LOG must point at the wrangler output file');
   browser = await chromium.launch();
 });
 after(async () => browser?.close());
@@ -48,17 +34,9 @@ async function newUser(name) {
   page.on('pageerror', (e) => errors.push(e.message));
   const email = `${name.toLowerCase()}-${run}@example.com`;
   await page.goto(BASE);
-  await page.getByLabel('Email address').fill(email);
-  const before = log().length;
-  await page.getByRole('button', { name: 'Email me a code' }).click();
-  const code = await waitFor(
-    () =>
-      log()
-        .slice(before)
-        .match(/login code is (\d{6})/)?.[1],
-    'OTP email',
-  );
-  await page.getByLabel('Digit 1').fill(code); // pasting the full code fills every box
+  await page.getByRole('link', { name: 'Continue with Google' }).click();
+  await page.getByLabel('Email').fill(email); // the fake Google's form
+  await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByLabel('Your name').fill(name);
   await page.getByRole('button', { name: "Let's go" }).click();
   await page.getByRole('heading', { name: new RegExp(`Hello, ${name}`) }).waitFor();
@@ -116,7 +94,6 @@ test('four friends complete a Secret Santa in the browser', async () => {
 
   const dev = await newUser('Dev');
   await dev.page.goto(invite);
-  const emailsBefore = log().length;
   await dev.page.getByRole('button', { name: 'Dev', exact: true }).click();
   await dev.page.getByRole('button', { name: /Join as Dev/ }).click();
   await dev.page.getByText('Names have been drawn').waitFor();
@@ -133,7 +110,6 @@ test('four friends complete a Secret Santa in the browser', async () => {
     if (person === ayush) await shot(person.page, '05-reveal');
   }
   assert.equal(new Set(Object.values(matches)).size, 4, 'everyone is drawn exactly once');
-  assert.ok(!/Secret Santa for|Dear /.test(log().slice(emailsBefore)), 'no match emails are sent');
 
   // A browser that wasn't used before the draw can't open it, even when logged in.
   const ayushOtherDevice = await browser.newContext();

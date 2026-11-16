@@ -308,9 +308,7 @@ async function loadMe() {
 /** Register this browser's device key so matches can be unlocked here, on the portal. */
 async function setupDevice(user) {
   try {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(user.email));
-    const accountKey = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    return await ensureDevice(accountKey, user.deviceIds || [], (publicKey) => api('POST', '/devices', { publicKey }));
+    return await ensureDevice(`account:${user.id}`, user.deviceIds || [], (publicKey) => api('POST', '/devices', { publicKey }));
   } catch {
     return null;
   }
@@ -434,7 +432,10 @@ async function viewLogin(params = new URLSearchParams()) {
         <ul class="promises">
           <li>
             <span class="ico" aria-hidden="true">🔒</span
-            ><span><b>Your email stays private</b>Encrypted at rest and never shown to anyone. Not the organiser, not even Philip.</span>
+            ><span
+              ><b>No emails, no spam</b>Sign in with Google or Apple. We don't even store your email address. Not even Philip can see
+              it.</span
+            >
           </li>
           <li>
             <span class="ico" aria-hidden="true">🤫</span
@@ -459,121 +460,15 @@ async function viewLogin(params = new URLSearchParams()) {
         ${
           providers.length
             ? html`<div class="actions">
-                  ${providers.includes('google') ? html`<a class="btn btn-social btn-block" href="/api/auth/oauth/google/start${ret}">${ICONS.google} Continue with Google</a>` : ''}
-                  ${providers.includes('apple') ? html`<a class="btn btn-apple btn-block" href="/api/auth/oauth/apple/start${ret}">${ICONS.apple} Continue with Apple</a>` : ''}
-                </div>
-                <div class="divider">or use a one-time code</div>`
-            : ''
+                ${providers.includes('google') ? html`<a class="btn btn-social btn-block" href="/api/auth/oauth/google/start${ret}">${ICONS.google} Continue with Google</a>` : ''}
+                ${providers.includes('apple') ? html`<a class="btn btn-apple btn-block" href="/api/auth/oauth/apple/start${ret}">${ICONS.apple} Continue with Apple</a>` : ''}
+              </div>`
+            : html`<p class="toast error">Sign-in isn't set up yet. The site owner needs to add Google or Apple sign-in keys.</p>`
         }
-        <form id="email-form" novalidate>
-          <div class="field">
-            <label for="email">Email address</label>
-            <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required maxlength="254" />
-          </div>
-          <div id="turnstile"></div>
-          <button class="btn btn-primary btn-block" type="submit">Email me a code</button>
-        </form>
-        <form id="code-form" hidden novalidate>
-          <p class="muted">We sent a 6-digit code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
-          <div class="otp" role="group" aria-label="6 digit code">
-            ${[0, 1, 2, 3, 4, 5].map((i) => html`<input inputmode="numeric" autocomplete="${i === 0 ? 'one-time-code' : 'off'}" maxlength="6" aria-label="Digit ${i + 1}" data-i="${i}" />`)}
-          </div>
-          <button class="btn btn-primary btn-block" type="submit">Sign in</button>
-          <div class="actions card-gap-sm"><button class="btn btn-ghost btn-sm" type="button" id="back">Use a different email</button></div>
-        </form>
+        <p class="faint card-gap-sm">We only use your account to recognise you. No emails, ever.</p>
       </div>
     </section>`,
   );
-
-  let turnstileToken = null;
-  if (state.config?.turnstileSiteKey) {
-    loadTurnstile().then((ts) => {
-      ts.render('#turnstile', {
-        sitekey: state.config.turnstileSiteKey,
-        theme: 'dark',
-        callback: (t) => {
-          turnstileToken = t;
-        },
-        'expired-callback': () => {
-          turnstileToken = null;
-        },
-      });
-    });
-  }
-
-  const emailForm = $('#email-form');
-  const codeForm = $('#code-form');
-  const digits = $$('.otp input');
-  let email = '';
-
-  emailForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    email = $('#email').value.trim();
-    if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Please enter a valid email.', 'error');
-    busy($('button[type=submit]', emailForm), async () => {
-      await api('POST', '/auth/request-otp', { email, turnstileToken });
-      $('#sent-to').textContent = email;
-      emailForm.hidden = true;
-      codeForm.hidden = false;
-      digits[0].focus();
-    });
-  });
-  $('#back').addEventListener('click', () => {
-    codeForm.hidden = true;
-    emailForm.hidden = false;
-    digits.forEach((d) => (d.value = ''));
-    if (window.turnstile) window.turnstile.reset();
-  });
-
-  digits.forEach((d, i) => {
-    d.addEventListener('input', () => {
-      const v = d.value.replace(/\D/g, '');
-      if (v.length > 1) {
-        // pasted / autofilled the whole code
-        v.slice(0, 6)
-          .split('')
-          .forEach((ch, j) => (digits[j].value = ch));
-        digits[Math.min(v.length, 6) - 1].focus();
-      } else {
-        d.value = v;
-        if (v && i < 5) digits[i + 1].focus();
-      }
-      if (digits.every((x) => x.value)) codeForm.requestSubmit();
-    });
-    d.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !d.value && i > 0) digits[i - 1].focus();
-    });
-  });
-
-  codeForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const code = digits.map((d) => d.value).join('');
-    if (code.length !== 6) return toast('Enter all 6 digits.', 'error');
-    busy($('button[type=submit]', codeForm), async () => {
-      try {
-        const res = await api('POST', '/auth/verify-otp', { email, code });
-        await loadMe();
-        go(res.needsName ? '#/welcome' : takeRemembered() || '#/home');
-      } catch (err) {
-        digits.forEach((x) => (x.value = ''));
-        digits[0].focus();
-        throw err;
-      }
-    });
-  });
-}
-
-let turnstilePromise;
-function loadTurnstile() {
-  turnstilePromise ||= new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-    s.async = true;
-    s.onload = () => resolve(window.turnstile);
-    s.onerror = reject;
-    document.head.append(s);
-  });
-  return turnstilePromise;
 }
 
 function viewWelcome(params) {
@@ -1353,10 +1248,7 @@ function viewProfile() {
       <div class="card">
         <form id="profile-form">
           <div class="field"><label for="name">Name</label><input id="name" maxlength="40" required value="${state.user.name}" /></div>
-          <div class="field">
-            <label>Email</label><input value="${state.user.email}" disabled />
-            <div class="hint">Encrypted on our side and never shown to other people.</div>
-          </div>
+          <p class="hint">We never store your email address, and we never send you emails.</p>
           <button class="btn btn-primary" type="submit">Save</button>
         </form>
       </div>

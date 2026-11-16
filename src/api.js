@@ -1,14 +1,11 @@
-import { ConfigError, decrypt, encrypt, hmac, randomOtp, randomToken, safeEqual } from './crypto.js';
+import { ConfigError, decrypt, encrypt, hmac, randomToken } from './crypto.js';
 import { drawPairs } from './draw.js';
-import { otpEmail, sendEmail } from './email.js';
 import { HttpError, assertSameOrigin, cleanText, getCookie, json, normaliseEmail, readJson } from './http.js';
 import { BINDING_COOKIE, configuredProviders, finishOAuth, startOAuth } from './oauth.js';
 import { importDevicePublicKey, wrapForDevice } from './sealing.js';
 
 const SESSION_COOKIE = '__Host-ss_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const OTP_TTL_MS = 10 * 60 * 1000;
-const OTP_MAX_ATTEMPTS = 5;
 // With 3 people, knowing your own match reveals every pair, so 4 is the minimum.
 const MIN_PEOPLE = 4;
 const MAX_PEOPLE = 50;
@@ -62,14 +59,7 @@ async function dispatch(request, env, ctx) {
 
     switch (route) {
       case 'GET /config':
-        return json({
-          providers: configuredProviders(env),
-          turnstileSiteKey: env.TURNSTILE_SECRET_KEY ? env.TURNSTILE_SITE_KEY || null : null,
-        });
-      case 'POST /auth/request-otp':
-        return requestOtp(request, env);
-      case 'POST /auth/verify-otp':
-        return verifyOtp(request, env);
+        return json({ providers: configuredProviders(env) });
       case 'POST /auth/logout':
         return logout(request, env, false);
       case 'POST /auth/logout-all':
@@ -147,7 +137,6 @@ async function rateLimit(env, rawKey, limit, windowSec) {
 async function cleanup(env) {
   const t = now();
   await env.DB.batch([
-    env.DB.prepare('DELETE FROM otps WHERE expires_at < ?').bind(t),
     env.DB.prepare('DELETE FROM auth_sessions WHERE expires_at < ?').bind(t),
     env.DB.prepare('DELETE FROM oauth_states WHERE expires_at < ?').bind(t),
     env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(t - 24 * 3600 * 1000),
@@ -158,7 +147,7 @@ async function currentUser(request, env) {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token || !TOKEN_RE.test(token)) return null;
   const row = await env.DB.prepare(
-    `SELECT u.id, u.display_name, u.email_enc, s.expires_at FROM auth_sessions s
+    `SELECT u.id, u.display_name, s.expires_at FROM auth_sessions s
      JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
   )
     .bind(await hmac(env, 'session', token))
@@ -177,15 +166,18 @@ function sessionCookie(token, maxAgeSec) {
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAgeSec}`;
 }
 
-/** Find-or-create the user for a verified email and open a fresh session. */
+/**
+ * Find-or-create the user for an email verified by Google or Apple, and open a fresh
+ * session. We never send email, so we don't keep the address at all: only a keyed
+ * HMAC of it, which lets Google and Apple logins with the same email share an account.
+ */
 async function loginWithEmail(env, email) {
   const emailHash = await hmac(env, 'email', email);
   let user = await env.DB.prepare('SELECT id, display_name FROM users WHERE email_hash = ?').bind(emailHash).first();
   let isNew = false;
   if (!user) {
-    const id = newId();
-    await env.DB.prepare('INSERT OR IGNORE INTO users (id, email_hash, email_enc, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(id, emailHash, await encrypt(env, email, `email:${id}`), '', now())
+    await env.DB.prepare('INSERT OR IGNORE INTO users (id, email_hash, display_name, created_at) VALUES (?, ?, ?, ?)')
+      .bind(newId(), emailHash, '', now())
       .run();
     user = await env.DB.prepare('SELECT id, display_name FROM users WHERE email_hash = ?').bind(emailHash).first();
     isNew = true;
@@ -195,72 +187,6 @@ async function loginWithEmail(env, email) {
     .bind(await hmac(env, 'session', token), user.id, now() + SESSION_TTL_MS, now())
     .run();
   return { user, isNew, cookie: sessionCookie(token, SESSION_TTL_MS / 1000) };
-}
-
-async function verifyTurnstile(env, request, token) {
-  if (!env.TURNSTILE_SECRET_KEY) return;
-  if (typeof token !== 'string' || !token || token.length > 2048) throw new HttpError(400, 'Please complete the human check.');
-  const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-    method: 'POST',
-    body: new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token, remoteip: clientIp(request) }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!data.success) throw new HttpError(400, 'Human check failed. Please try again.');
-}
-
-// ---------------------------------------------------------------------------
-// Auth: email OTP
-// ---------------------------------------------------------------------------
-
-async function requestOtp(request, env) {
-  const body = await readJson(request);
-  const email = normaliseEmail(body.email);
-  await rateLimit(env, `otp-ip:${clientIp(request)}`, 10, 15 * 60);
-  await verifyTurnstile(env, request, body.turnstileToken);
-  const emailHash = await hmac(env, 'email', email);
-  await rateLimit(env, `otp-email:${emailHash}`, 3, 15 * 60);
-
-  const code = randomOtp();
-  await env.DB.prepare('INSERT OR REPLACE INTO otps (email_hash, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0)')
-    .bind(emailHash, await hmac(env, 'otp', `${emailHash}:${code}`), now() + OTP_TTL_MS)
-    .run();
-  try {
-    await sendEmail(env, { to: email, ...otpEmail(env, code) });
-  } catch (err) {
-    console.error('OTP email failed:', err.message);
-    throw new HttpError(502, "We couldn't send the email right now. Please try again shortly.");
-  }
-  // Same response whether or not the account exists (no account enumeration).
-  return json({ ok: true });
-}
-
-async function verifyOtp(request, env) {
-  const body = await readJson(request);
-  const email = normaliseEmail(body.email);
-  const code = typeof body.code === 'string' ? body.code.replace(/\s+/g, '') : '';
-  if (!/^\d{6}$/.test(code)) throw new HttpError(400, 'The code is 6 digits.');
-  await rateLimit(env, `verify-ip:${clientIp(request)}`, 30, 15 * 60);
-  const emailHash = await hmac(env, 'email', email);
-  await rateLimit(env, `verify-email:${emailHash}`, 15, 60 * 60);
-
-  const otp = await env.DB.prepare('SELECT * FROM otps WHERE email_hash = ?').bind(emailHash).first();
-  const invalid = new HttpError(400, 'That code is wrong or has expired.');
-  if (!otp || otp.expires_at < now()) throw invalid;
-  if (otp.attempts >= OTP_MAX_ATTEMPTS) {
-    await env.DB.prepare('DELETE FROM otps WHERE email_hash = ?').bind(emailHash).run();
-    throw new HttpError(429, 'Too many wrong codes. Please request a new one.');
-  }
-  const expected = await hmac(env, 'otp', `${emailHash}:${code}`);
-  if (!safeEqual(expected, otp.code_hash)) {
-    await env.DB.prepare('UPDATE otps SET attempts = attempts + 1 WHERE email_hash = ?').bind(emailHash).run();
-    throw invalid;
-  }
-  // Single use: only the request that actually deletes the row wins.
-  const del = await env.DB.prepare('DELETE FROM otps WHERE email_hash = ? AND code_hash = ?').bind(emailHash, expected).run();
-  if (del.meta.changes !== 1) throw invalid;
-
-  const { user, isNew, cookie } = await loginWithEmail(env, email);
-  return json({ ok: true, needsName: isNew || !user.display_name }, 200, { 'set-cookie': cookie });
 }
 
 async function logout(request, env, everywhere) {
@@ -330,9 +256,8 @@ async function oauthCallback(request, env, provider, url) {
 async function getMe(request, env) {
   const user = await currentUser(request, env);
   if (!user) return json({ user: null });
-  const email = await decrypt(env, user.email_enc, `email:${user.id}`);
   const { results: devices } = await env.DB.prepare('SELECT id FROM device_keys WHERE user_id = ?').bind(user.id).all();
-  return json({ user: { name: user.display_name, email, deviceIds: devices.map((d) => d.id) } });
+  return json({ user: { id: user.id, name: user.display_name, deviceIds: devices.map((d) => d.id) } });
 }
 
 async function updateMe(request, env) {

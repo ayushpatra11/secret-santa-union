@@ -52,7 +52,7 @@ describe('signup', () => {
     assert.equal(second.needsName, false);
     const me = await t.call('GET', '/me', { cookie: second.cookie });
     assert.equal(me.data.user.name, 'Newbie');
-    assert.equal(me.data.user.email, 'newbie@example.com');
+    assert.equal(me.data.user.email, undefined, 'the app does not know your email address');
   });
 
   test('email case and whitespace do not create duplicate accounts', async () => {
@@ -63,16 +63,17 @@ describe('signup', () => {
     assert.ok(a.cookie !== b.cookie, 'each login gets a fresh session token');
   });
 
-  test('requesting a code looks identical for new and existing accounts (no enumeration)', async () => {
-    await t.login('exists@example.com', 'Exists');
-    const known = await t.call('POST', '/auth/request-otp', { body: { email: 'exists@example.com' } });
-    const unknown = await t.call('POST', '/auth/request-otp', { body: { email: 'never-seen@example.com' } });
-    assert.equal(known.status, unknown.status);
-    assert.deepEqual(known.data, unknown.data);
+  test('Google and Apple logins with the same email share one account', async () => {
+    const g = await t.login('both@example.com', 'Both');
+    const a = await t.login('BOTH@example.com', undefined, { provider: 'apple' });
+    assert.equal(a.needsName, false);
+    assert.equal(
+      (await t.call('GET', '/me', { cookie: a.cookie })).data.user.id,
+      (await t.call('GET', '/me', { cookie: g.cookie })).data.user.id,
+    );
   });
 
-  test('validates names and emails', async () => {
-    assert.equal((await t.call('POST', '/auth/request-otp', { body: { email: 'not-an-email' } })).status, 400);
+  test('validates names', async () => {
     const u = await t.login('valid@example.com');
     assert.equal((await t.call('PATCH', '/me', { cookie: u.cookie, body: { name: '' } })).status, 400);
     assert.equal((await t.call('PATCH', '/me', { cookie: u.cookie, body: { name: 'x'.repeat(41) } })).status, 400);
@@ -253,7 +254,6 @@ describe('no peeking', () => {
       'users',
       'slots',
       'exchanges',
-      'otps',
       'auth_sessions',
       'rate_limits',
       'oauth_states',
@@ -270,17 +270,6 @@ describe('no peeking', () => {
     for (const row of slots) {
       const others = slots.filter((o) => o.id !== row.id).map((o) => o.name);
       for (const n of others) assert.ok(!String(row.giftee_enc).includes(n));
-    }
-  });
-
-  test('console email mode refuses to run outside localhost (it would log login codes)', async () => {
-    const saved = t.env.APP_URL;
-    t.env.APP_URL = 'https://philipwantedagift.com';
-    try {
-      const r = await t.call('POST', '/auth/request-otp', { body: { email: 'prod@example.com' } });
-      assert.equal(r.status, 502);
-    } finally {
-      t.env.APP_URL = saved;
     }
   });
 });

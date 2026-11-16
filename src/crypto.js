@@ -1,8 +1,8 @@
 // Cryptographic helpers built on the Web Crypto API (available in Cloudflare Workers).
 //
 // A single secret (APP_SECRET) is expanded with HKDF into two independent keys:
-//   - an AES-256-GCM key used to encrypt emails, assignments and wishlists at rest
-//   - an HMAC-SHA256 key used for blind indexes and for hashing OTPs / tokens
+//   - an AES-256-GCM key used to encrypt wishlists, photos and invite links at rest
+//   - an HMAC-SHA256 key used for the email fingerprint and for hashing tokens
 // Leaking the database alone therefore reveals no email addresses or pairings.
 
 const enc = new TextEncoder();
@@ -92,17 +92,4 @@ export function randomInt(max) {
     crypto.getRandomValues(buf);
     if (buf[0] < limit) return buf[0] % max;
   }
-}
-
-/** 6-digit one-time code. */
-export function randomOtp() {
-  return String(randomInt(1_000_000)).padStart(6, '0');
-}
-
-/** Constant-time comparison of two equal-format strings. */
-export function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }

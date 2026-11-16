@@ -11,9 +11,10 @@ const login = (...a) => t.login(...a);
 
 describe('security basics', () => {
   test('rejects cross-site and header-less mutations', async () => {
-    const r1 = await call('POST', '/auth/request-otp', { body: { email: 'a@example.com' }, headers: { origin: 'https://evil.example' } });
+    const u = await login('csrf@example.com', 'Csrf');
+    const r1 = await call('PATCH', '/me', { cookie: u.cookie, body: { name: 'x' }, headers: { origin: 'https://evil.example' } });
     assert.equal(r1.status, 403);
-    const r2 = await call('POST', '/auth/request-otp', { body: { email: 'a@example.com' }, headers: { 'x-requested-with': '' } });
+    const r2 = await call('PATCH', '/me', { cookie: u.cookie, body: { name: 'x' }, headers: { 'x-requested-with': '' } });
     assert.equal(r2.status, 403);
   });
 
@@ -22,45 +23,25 @@ describe('security basics', () => {
     assert.equal((await call('GET', '/me')).data.user, null);
   });
 
-  test('login cookie is HttpOnly, Secure, SameSite=Strict and __Host- prefixed', async () => {
-    const before = t.emails.length;
-    await call('POST', '/auth/request-otp', { body: { email: 'cookie@example.com' } });
-    const r = await call('POST', '/auth/verify-otp', { body: { email: 'cookie@example.com', code: t.codeFor(before) } });
-    const c = r.headers.get('set-cookie');
-    assert.match(c, /^__Host-ss_session=/);
-    for (const flag of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/']) assert.ok(c.includes(flag), flag);
+  test('there is no email/password/code login at all', async () => {
+    for (const path of ['/auth/request-otp', '/auth/verify-otp', '/auth/login', '/auth/register']) {
+      assert.equal((await call('POST', path, { body: { email: 'x@example.com' } })).status, 404, path);
+    }
   });
 
-  test('wrong OTP fails, OTPs are single use, and attempts are limited', async () => {
-    const email = 'otp@example.com';
-    let before = t.emails.length;
-    await call('POST', '/auth/request-otp', { body: { email } });
-    const code = t.codeFor(before);
-    const wrong = code === '000000' ? '111111' : '000000';
-    assert.equal((await call('POST', '/auth/verify-otp', { body: { email, code: wrong } })).status, 400);
-    assert.equal((await call('POST', '/auth/verify-otp', { body: { email, code } })).status, 200);
-    assert.equal((await call('POST', '/auth/verify-otp', { body: { email, code } })).status, 400, 'reused code must fail');
-
-    before = t.emails.length;
-    await call('POST', '/auth/request-otp', { body: { email } });
-    const code2 = t.codeFor(before);
-    const bad = code2 === '999999' ? '888888' : '999999';
-    for (let i = 0; i < 5; i++) await call('POST', '/auth/verify-otp', { body: { email, code: bad } });
-    const locked = await call('POST', '/auth/verify-otp', { body: { email, code: code2 } });
-    assert.equal(locked.status, 429, 'correct code after too many failures must be refused');
+  test('session cookie is HttpOnly, Secure, SameSite=Strict and __Host- prefixed', async () => {
+    const r = await t.oauth('cookie@example.com');
+    assert.match(r.sessionCookie, /^__Host-ss_session=/);
+    for (const flag of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/']) assert.ok(r.sessionCookie.includes(flag), flag);
   });
 
-  test('rate limits code requests per email', async () => {
-    const email = 'spam@example.com';
-    for (let i = 0; i < 3; i++) assert.equal((await call('POST', '/auth/request-otp', { body: { email } })).status, 200);
-    assert.equal((await call('POST', '/auth/request-otp', { body: { email } })).status, 429);
-  });
-
-  test('stores no plaintext email addresses', async () => {
+  test('email addresses are not stored anywhere, not even encrypted', async () => {
     await login('plaintext-check@example.com');
-    for (const table of ['users', 'otps']) {
-      const { results } = await t.env.DB.prepare(`SELECT * FROM ${table}`).all();
-      for (const row of results) assert.ok(!JSON.stringify(row).includes('@'), `email leaked into ${table}`);
+    const { results } = await t.env.DB.prepare('SELECT * FROM users').all();
+    assert.ok(results.length > 0);
+    for (const row of results) {
+      assert.deepEqual(Object.keys(row).sort(), ['created_at', 'display_name', 'email_hash', 'id']);
+      assert.ok(!JSON.stringify(row).includes('@'));
     }
   });
 });
@@ -144,11 +125,6 @@ describe('a full Secret Santa', () => {
     const last = await join('Dev', slot('Dev'));
     assert.equal(last.status, 200);
     assert.equal(last.data.drawn, true, 'last join triggers the draw');
-  });
-
-  test('no match emails are ever sent: the only emails are login codes', async () => {
-    assert.ok(t.emails.length > 0);
-    for (const m of t.emails) assert.match(m, /login code/);
   });
 
   test('the session is locked after the draw', async () => {

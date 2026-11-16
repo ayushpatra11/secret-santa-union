@@ -7,65 +7,65 @@
 <p align="center"><i>Philip wanted a gift. So now everyone's getting one.</i></p>
 
 > **This is a vibe-coded project, made for my friends.** It was built in a weekend of
-> festive enthusiasm with an AI pair-programmer (Claude). It's open source, and
-> it's tested and reviewed as if strangers' secrets depend on it, because they do. But it is a hobby
-> project, not a company. Use it, fork it, and if you find a bug, please tell us
-> (see [SECURITY.md](SECURITY.md) for anything sensitive).
+> festive enthusiasm with an AI pair-programmer (Claude). It's open source, and it's
+> tested and reviewed as if strangers' secrets depend on it, because they do. But it
+> is a hobby project, not a company. Use it, fork it, and if you find a bug, please
+> tell us (see [SECURITY.md](SECURITY.md) for anything sensitive).
 
 A tiny, private, delightfully silly **Secret Santa** web app that runs entirely on
 Cloudflare Workers + D1:
 
-- 🔐 **Passwordless sign-in.** Use a 6-digit email code, or _Continue with Google / Apple_.
+- 🔐 **Sign in with Google or Apple.** No passwords, and **no emails, ever**.
 - 👤 **One profile, many Secret Santas.** Log in any year and see all your sessions.
 - 🎄 **Organisers** create a session with a name, a **budget**, a date, a note and a
   **quirky group photo**, then list the people taking part and share one invite link.
 - 🙋 **Friends** open the link, sign in, pick their own name and add a wishlist.
-- ✨ **The draw is automatic.** The moment the last person joins, names are drawn,
-  the session locks, and everyone opens their match **right in the app**. No match
-  emails are ever sent: email is only used for login codes.
+- ✨ **The draw is automatic.** The moment the last person joins, names are drawn, the
+  session locks, and everyone sees who they're buying for **right in the app**.
 - 🤫 **Nobody can peek.** Not other members, not the organiser, and not even whoever
   runs the website. Details below.
-- 🧑‍🎄 Organisers can edit the people list, or delete the session, until it fills up. After that it's locked forever.
+- 🧑‍🎄 Organisers can edit the people list, or delete the session, until it fills up.
+  After that it's locked forever.
 
 ---
 
 ## How the privacy works
 
-| Who                                  | What they can see                                                               |
-| ------------------------------------ | ------------------------------------------------------------------------------- |
-| Other members                        | The session details and which names have joined. **Never** emails, never pairs. |
-| The organiser                        | The same, plus whether each person can open their match. **Never** pairs.       |
-| You                                  | Your own match, unlocked by _your_ browser's private key.                       |
-| The site operator (DB + all secrets) | Ciphertext. **Cannot** decrypt anyone's match.                                  |
+| Who                                  | What they can see                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------- |
+| Other members                        | The session details and which names have joined. **Never** pairs.          |
+| The organiser                        | The same, plus whether each person can open their match. **Never** pairs.  |
+| You                                  | Your own match, unlocked by _your_ browser's private key.                  |
+| The site operator (DB + all secrets) | Ciphertext. **Cannot** decrypt anyone's match, and has no email addresses. |
 
-- **Emails are encrypted at rest** (AES-256-GCM). Lookups use a keyed HMAC "blind
-  index", so a database dump contains no addresses.
-- **Login codes, session tokens and invite links are stored only as HMAC hashes.**
-  Codes expire after 10 minutes, are single-use and are attempt-limited. Every
-  sensitive endpoint is rate-limited.
+- **No email addresses are stored.** The app never sends email, so it keeps only a
+  keyed fingerprint (HMAC) of the address Google or Apple verified. That's enough to
+  recognise you, and lets Google and Apple logins with the same email share one account.
+- **Sign-in is OpenID Connect with PKCE, `state` and `nonce`.** State is single-use,
+  server-side, and bound to the browser that started the login. Only verified emails
+  are accepted.
+- **Session tokens and invite links are stored only as HMAC hashes.** Every sensitive
+  endpoint is rate-limited.
 - **Matches are sealed so only your own browser can open them.** Every browser you sign
   in on creates its own key pair. The private half is _non-extractable_ and never leaves
   the browser; the server only knows the public half. At the draw, each person's match
   is encrypted with a fresh random 256-bit key, which is locked (ECIES: P-256 ECDH +
   HKDF + AES-GCM) to each browser that person had signed in on, then thrown away. The
   database keeps only ciphertext and locked keys that the server itself can't open.
-  No match is ever emailed, logged or shown to anyone else.
-
 - **The draw leaks nothing.** It's not just "nobody draws themselves". Knowing who
-  _you_ drew tells you nothing about who drew _you_: every other person, including
-  your own giftee, is exactly equally likely (see [`src/draw.js`](src/draw.js)).
-  Sessions need at least **4** people, because with 3 the maths gives everything away.
+  _you_ drew tells you nothing about who drew _you_: every other person, including your
+  own giftee, is exactly equally likely (see [`src/draw.js`](src/draw.js)). Sessions need
+  at least **4** people, because with 3 the maths gives everything away.
 - **Group photos** are re-encoded in your browser (which strips GPS and other EXIF
   data), type-checked on the server, encrypted, and shown only to members.
-- Hardened delivery: strict Content-Security-Policy (no inline scripts, no third-party
-  JS except optional Cloudflare Turnstile), HSTS, `__Host-` cookies with
-  `HttpOnly; Secure; SameSite=Strict`, and an Origin check plus a custom header on
-  every state-changing request.
+- **Hardened delivery:** a strict Content-Security-Policy (no inline or third-party
+  scripts), HSTS, `__Host-` cookies with `HttpOnly; Secure; SameSite=Strict`, and an
+  Origin check plus a custom header on every state-changing request.
 
 The honest limits are in [SECURITY.md](SECURITY.md#threat-model). The short version:
-open your match on a browser you used **before the draw**. If you clear it (or only
-ever used a private window), nobody can recover your match, and the organiser has to
-redraw for everyone.
+open your match on a browser you used **before the draw**. If you clear it (or only ever
+used a private window), nobody can recover your match, and the organiser has to redraw
+for everyone.
 
 ---
 
@@ -81,22 +81,29 @@ npm install
 cp .dev.vars.example .dev.vars
 ```
 
-Then put a random secret in `.dev.vars`:
+Put a random `APP_SECRET` in `.dev.vars`. This prints one:
 
 ```bash
-node -e "console.log('APP_SECRET=' + require('crypto').randomBytes(32).toString('base64'))"
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 ```bash
 npm run db:migrate:local
 ```
 
+Then, in two terminals:
+
+```bash
+npm run dev:fake-google
+```
+
 ```bash
 npm run dev
 ```
 
-Open <http://localhost:8788>. Locally, emails (login codes and match links) are
-**printed in the terminal** instead of being sent.
+Open <http://localhost:8788> and click **Continue with Google**. Locally, that goes to
+a fake Google where you can type any email. The fake only works while the site runs on
+localhost; production refuses it.
 
 ### Tests
 
@@ -106,10 +113,16 @@ npm test          # unit + API tests against a real local D1 database
 npm run test:e2e  # full browser journey with Playwright against `wrangler dev`
 ```
 
-The suites cover signup and login, the full draw, idempotency and races (double
-clicks, people racing for the last spot, repeated requests), and a long list of
-"try to peek" attacks: API responses, the database, keys, swapped ciphertexts,
-outsiders, and organiser powers.
+The suites cover:
+
+- **Sign-in:** replayed callbacks, cross-browser logins, forged state, and tokens with
+  the wrong nonce, audience, issuer or expiry, or an unverified email. Also open
+  redirects.
+- **The draw:** the full flow, plus a statistical check that it's neutral.
+- **Idempotency and races:** double clicks, people racing for the last spot, repeated
+  requests.
+- **"Try to peek" attacks:** API responses, the database, keys, swapped ciphertexts,
+  outsiders, and organiser powers.
 
 ---
 
@@ -121,13 +134,13 @@ repo, so **Cloudflare builds and deploys by itself**:
 - pushes to `main` → **production** at `https://philipwantedagift.com`
 - other branches → **preview URLs**, shown on the pull request
 
-GitHub Actions run all the tests on every pull request. Protect `main` (step 6) so
+GitHub Actions run all the tests on every pull request. Protect `main` (step 5) so
 nothing reaches production without passing them. **No keys are needed in GitHub.**
 
 ### 1. Connect the repo (once)
 
-1. **Workers & Pages → Create → Import a repository** → pick this repo. Name it
-   `philipwantedagift`.
+1. **Workers & Pages → Create → Import a repository** → pick this repo. The Worker's
+   name must match `name` in [`wrangler.toml`](wrangler.toml) (`secret-santa-union`).
 2. In **Settings → Build**:
    - **Build command:** leave empty
    - **Deploy command:** `npx wrangler deploy`
@@ -137,7 +150,8 @@ nothing reaches production without passing them. **No keys are needed in GitHub.
 ### 2. Create the database
 
 1. Go to **Storage & Databases → D1 → Create database** and name it **`philipwantedagift`**.
-2. Put its **Database ID** in `wrangler.toml` (`database_id`). Forks: use your own database there.
+2. Put its **Database ID** in `wrangler.toml` (`database_id`). If you fork this, use
+   your own database here.
 3. Create the tables. Run this once from the repo folder:
 
    ```bash
@@ -148,61 +162,56 @@ nothing reaches production without passing them. **No keys are needed in GitHub.
    [`migrations/0001_init.sql`](migrations/0001_init.sql) into the database's **Console**
    instead, **without the `--` comment lines**. The console joins everything into one
    line, so a comment would swallow the SQL after it. Check with `/tables`: you should
-   see 10 tables.
+   see 9 tables.
 
 ### 3. Add the secrets
 
-Go to **Workers & Pages → philipwantedagift → Settings → Variables and Secrets → Add**
+Go to **Workers & Pages → secret-santa-union → Settings → Variables and Secrets → Add**
 and choose type **Secret**:
 
-| Name            | Value                                                                                                                                                                                                    |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APP_SECRET`    | A long random string: at least 44 random characters from a password manager's generator, or `openssl rand -base64 32`. **Save it somewhere safe.** Losing or changing it makes stored emails unreadable. |
-| `EMAIL_API_KEY` | Your Brevo API key (step 4).                                                                                                                                                                             |
-| `EMAIL_FROM`    | `santa@philipwantedagift.com`                                                                                                                                                                            |
+- **`APP_SECRET`:** a long random string, at least 44 random characters from a password
+  manager's generator, or `openssl rand -base64 32`. **Save it somewhere safe.** If it
+  changes, everyone gets a new account on their next login, and saved wishlists and
+  photos become unreadable.
+- **`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`:** from step 4.
+- **`APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID` and `APPLE_PRIVATE_KEY`:** optional,
+  from step 4.
 
-Optional: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, the Apple keys (step 5), and
-`TURNSTILE_SECRET_KEY` (bot protection).
+Each sign-in button only appears once its keys are set.
 
 > Preview versions share production's database and secrets. That's fine for a friends'
-> project, but don't share preview links around.
+> project, but don't share preview links around. Google/Apple sign-in always returns to
+> `APP_URL` (production).
 
-### 4. Email for login codes (Brevo, free)
+### 4. Google and Apple sign-in
 
-Email is only used to send 6-digit login codes. Matches are never emailed.
+**Google (free, about 10 minutes):**
 
-1. Sign up at brevo.com.
-2. **Senders, domains & dedicated IPs → Domains → Add a domain** → `philipwantedagift.com`.
-   Add the DNS records Brevo shows in **Cloudflare → philipwantedagift.com → DNS**.
-3. **Senders → Add a sender** → `santa@philipwantedagift.com`. No real inbox is needed.
-4. **SMTP & API → API keys → Generate** and use the key as `EMAIL_API_KEY`.
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a project.
+2. **APIs & Services → OAuth consent screen** (now called **Google Auth Platform**):
+   - **Branding:** app name `PhilipWantedAGift.com`, your support email.
+   - **Audience:** External, then **Publish app**. While it's in "Testing", only
+     people you list as test users can sign in.
+   - **Data access:** add the scopes `openid` and `.../auth/userinfo.email`.
+3. **Clients → Create client → Web application**:
+   - **Authorised JavaScript origins:** `https://philipwantedagift.com`
+   - **Authorised redirect URIs:** `https://philipwantedagift.com/api/auth/oauth/google/callback`
+4. Copy the **Client ID** and **Client secret** into the secrets `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET`.
 
-You don't need a throwaway Gmail: a sender on your own domain delivers better.
-(Resend works too: set `EMAIL_PROVIDER = "resend"` in `wrangler.toml`.)
+**Apple** (needs a paid Apple Developer account):
 
-### 5. Optional: Google and Apple sign-in
+1. **Certificates, IDs & Profiles → Identifiers**: create an **App ID** with _Sign in
+   with Apple_ enabled, then a **Services ID**. That Services ID is `APPLE_CLIENT_ID`.
+2. Configure the Services ID: domain `philipwantedagift.com`, return URL
+   `https://philipwantedagift.com/api/auth/oauth/apple/callback`.
+3. **Keys** → create a key with _Sign in with Apple_ and download the `.p8` file. Its
+   full contents are `APPLE_PRIVATE_KEY`, its id is `APPLE_KEY_ID`, and your team id
+   (top right of the developer site) is `APPLE_TEAM_ID`.
 
-**Google:**
+### 5. Custom domain and branch protection
 
-1. In Google Cloud Console, go to **APIs & Services → OAuth consent screen**. Choose
-   External, with the scopes `openid` and `email`.
-2. **Credentials → OAuth client ID → Web application**.
-3. Add the redirect URI `https://philipwantedagift.com/api/auth/oauth/google/callback`.
-4. Add the client ID and secret as the secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
-
-**Apple** needs a paid Apple Developer account:
-
-1. Create a **Services ID** with _Sign in with Apple_, using the domain
-   `philipwantedagift.com` and the return URL
-   `https://philipwantedagift.com/api/auth/oauth/apple/callback`. This Services ID is `APPLE_CLIENT_ID`.
-2. Create a **Key** with _Sign in with Apple_. Its `.p8` contents are `APPLE_PRIVATE_KEY`,
-   its id is `APPLE_KEY_ID`, and your team id is `APPLE_TEAM_ID`.
-3. Under **Sign in with Apple for Email Communication**, register
-   `santa@philipwantedagift.com`, or login codes to "Hide My Email" addresses are dropped.
-
-### 6. Custom domain and branch protection
-
-- **Workers & Pages → philipwantedagift → Settings → Domains & Routes → Add → Custom
+- **Workers & Pages → secret-santa-union → Settings → Domains & Routes → Add → Custom
   domain** → `philipwantedagift.com`. On the same page, turn **Preview URLs** on.
 - In GitHub, go to **Settings → Rules → Rulesets → New branch ruleset** for `main`:
   - require a pull request
@@ -216,11 +225,11 @@ You don't need a throwaway Gmail: a sender on your own domain delivers better.
 
 ```
 public/            static site (index.html, app.js, styles.css, _headers = security headers)
-public/lib/        browser-side crypto (opening your sealed match)
-src/               Worker entry (worker.js), API, crypto, draw, email, OAuth
+public/lib/        browser-side crypto (device keys, opening your sealed match)
+src/               Worker entry (worker.js), API, crypto, draw, OAuth
 migrations/        D1 schema
-test/              unit + API tests (node:test, real local D1)
-e2e/               browser tests (Playwright)
+test/              unit + API + sign-in attack tests (node:test, real local D1)
+e2e/               browser tests (Playwright) and the fake local Google
 scripts/           e2e runner
 .github/           CI and CodeQL workflows, templates
 ```
