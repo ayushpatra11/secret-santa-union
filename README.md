@@ -21,7 +21,8 @@ Cloudflare Pages + D1:
   **quirky group photo**, then list the people taking part and share one invite link.
 - 🙋 **Friends** open the link, sign in, pick their own name and add a wishlist.
 - ✨ **The draw is automatic.** The moment the last person joins, names are drawn,
-  the session locks, and everyone gets an email telling them who to buy for.
+  the session locks, and everyone can open their match **right in the app**. They also
+  get an email, but the app works even if the email never arrives.
 - 🤫 **Nobody can peek.** Not other members, not the organiser, and not even whoever
   runs the website. Details below.
 - 🧑‍🎄 Organisers can edit the people list, or delete the session, until it fills up. After that it's locked forever.
@@ -34,7 +35,7 @@ Cloudflare Pages + D1:
 | ------------------------------------ | ------------------------------------------------------------------------------- |
 | Other members                        | The session details and which names have joined. **Never** emails, never pairs. |
 | The organiser                        | The same, plus whether each match email was delivered. **Never** pairs.         |
-| You                                  | Your own match, unlocked with the key in _your_ email.                          |
+| You                                  | Your own match, unlocked by _your_ browser's private key or your email link.    |
 | The site operator (DB + all secrets) | Ciphertext. **Cannot** decrypt anyone's match.                                  |
 
 - **Emails are encrypted at rest** (AES-256-GCM). Lookups use a keyed HMAC "blind
@@ -42,10 +43,18 @@ Cloudflare Pages + D1:
 - **Login codes, session tokens and invite links are stored only as HMAC hashes.**
   Codes expire after 10 minutes, are single-use and are attempt-limited. Every
   sensitive endpoint is rate-limited.
-- **Matches are sealed with a key that only exists in your email.** At the draw, each
-  person's match is encrypted with a fresh random 256-bit key. That key goes into the
-  link in their email (after the `#`, so browsers never send it to any server) and is
-  then thrown away. The database keeps only ciphertext the server itself can't open.
+- **Matches are sealed so only you can open them, in the app or from your email.**
+  At the draw, each person's match is encrypted with a fresh random 256-bit key, which
+  is then handed out in only two ways:
+  1. **To your browser.** Every browser you sign in on creates its own key pair. The
+     private half is _non-extractable_ and never leaves the browser; the server only
+     knows the public half. Your match key is locked (ECIES: P-256 ECDH + HKDF + AES-GCM)
+     to each of your devices, so the app can show your match even if the email bounced.
+  2. **In your email link**, after the `#`, so browsers never send it to any server.
+
+  The key is then thrown away. The database keeps only ciphertext and locked keys that
+  the server itself can't open.
+
 - **The draw leaks nothing.** It's not just "nobody draws themselves". Knowing who
   _you_ drew tells you nothing about who drew _you_: every other person, including
   your own giftee, is exactly equally likely (see [`src/draw.js`](src/draw.js)).

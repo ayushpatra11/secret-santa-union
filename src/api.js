@@ -3,6 +3,7 @@ import { drawPairs } from './draw.js';
 import { assignmentEmail, otpEmail, sendEmail } from './email.js';
 import { HttpError, assertSameOrigin, cleanText, getCookie, json, normaliseEmail, readJson } from './http.js';
 import { BINDING_COOKIE, configuredProviders, finishOAuth, startOAuth } from './oauth.js';
+import { importDevicePublicKey, wrapForDevice } from './sealing.js';
 
 const SESSION_COOKIE = '__Host-ss_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -77,6 +78,8 @@ async function dispatch(request, env, ctx) {
         return getMe(request, env);
       case 'PATCH /me':
         return updateMe(request, env);
+      case 'POST /devices':
+        return registerDevice(request, env);
       case 'DELETE /me':
         return deleteMe(request, env);
       case 'GET /exchanges':
@@ -328,7 +331,8 @@ async function getMe(request, env) {
   const user = await currentUser(request, env);
   if (!user) return json({ user: null });
   const email = await decrypt(env, user.email_enc, `email:${user.id}`);
-  return json({ user: { name: user.display_name, email } });
+  const { results: devices } = await env.DB.prepare('SELECT id FROM device_keys WHERE user_id = ?').bind(user.id).all();
+  return json({ user: { name: user.display_name, email, deviceIds: devices.map((d) => d.id) } });
 }
 
 async function updateMe(request, env) {
@@ -344,6 +348,9 @@ async function deleteMe(request, env) {
   const body = await readJson(request);
   if (body.confirm !== 'DELETE') throw new HttpError(400, 'Type DELETE to confirm.');
   await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM match_key_wraps WHERE slot_id IN (SELECT s.id FROM slots s JOIN exchanges e ON e.id = s.exchange_id WHERE e.creator_id = ?)`,
+    ).bind(user.id),
     env.DB.prepare(`DELETE FROM slots WHERE exchange_id IN (SELECT id FROM exchanges WHERE creator_id = ?)`).bind(user.id),
     env.DB.prepare(`DELETE FROM exchange_photos WHERE exchange_id IN (SELECT id FROM exchanges WHERE creator_id = ?)`).bind(user.id),
     env.DB.prepare('DELETE FROM exchanges WHERE creator_id = ?').bind(user.id),
@@ -354,6 +361,8 @@ async function deleteMe(request, env) {
     ).bind(user.id),
     env.DB.prepare('UPDATE slots SET user_id = NULL WHERE user_id = ?').bind(user.id),
     env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM match_key_wraps WHERE device_id IN (SELECT id FROM device_keys WHERE user_id = ?)').bind(user.id),
+    env.DB.prepare('DELETE FROM device_keys WHERE user_id = ?').bind(user.id),
     env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id),
   ]);
   return json({ ok: true }, 200, { 'set-cookie': sessionCookie('', 0) });
@@ -575,6 +584,7 @@ async function deleteExchange(request, env, id) {
   const ex = await loadExchange(env, id);
   if (ex.creator_id !== user.id) throw new HttpError(403, 'Only the organiser can delete this session.');
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM match_key_wraps WHERE slot_id IN (SELECT id FROM slots WHERE exchange_id = ?)').bind(id),
     env.DB.prepare('DELETE FROM slots WHERE exchange_id = ?').bind(id),
     env.DB.prepare('DELETE FROM exchange_photos WHERE exchange_id = ?').bind(id),
     env.DB.prepare('DELETE FROM exchanges WHERE id = ? AND creator_id = ?').bind(id, user.id),
@@ -625,7 +635,15 @@ async function myMatch(request, env, id) {
   if (!slot) throw new HttpError(404, 'You are not part of this session.');
   if (!slot.giftee_enc) throw new HttpError(409, "Names haven't been drawn yet.");
   // Sealed with a key only the member has (from their email link). We cannot open it.
-  return json({ sealed: slot.giftee_enc, slotId: slot.id });
+  // Wraps of the one-time key for each of this member's registered devices. Only the
+  // browser holding the matching private key can unwrap one.
+  const { results: wraps } = await env.DB.prepare(
+    `SELECT w.device_id AS deviceId, w.epk, w.wrapped FROM match_key_wraps w
+     JOIN device_keys d ON d.id = w.device_id WHERE w.slot_id = ? AND d.user_id = ?`,
+  )
+    .bind(slot.id, user.id)
+    .all();
+  return json({ sealed: slot.giftee_enc, slotId: slot.id, wraps });
 }
 
 /**
@@ -647,6 +665,34 @@ async function redraw(request, env, ctx, id) {
   const deliveries = await drawAndSeal(env, id);
   const result = await deliverMatches(env, id, deliveries, true);
   return json({ ok: true, ...result });
+}
+
+// ---------------------------------------------------------------------------
+// Devices (portal reveal)
+// ---------------------------------------------------------------------------
+
+const MAX_DEVICES = 10;
+
+async function registerDevice(request, env) {
+  const user = await requireUser(request, env);
+  await rateLimit(env, `device:${user.id}`, 20, 60 * 60);
+  const body = await readJson(request);
+  try {
+    await importDevicePublicKey(body.publicKey);
+  } catch {
+    throw new HttpError(400, 'Invalid device key.');
+  }
+  const id = newId();
+  await env.DB.prepare('INSERT INTO device_keys (id, user_id, public_key, created_at) VALUES (?, ?, ?, ?)')
+    .bind(id, user.id, body.publicKey, now())
+    .run();
+  // Keep the newest few devices per person.
+  await env.DB.prepare(
+    `DELETE FROM device_keys WHERE user_id = ?1 AND id NOT IN (SELECT id FROM device_keys WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ${MAX_DEVICES})`,
+  )
+    .bind(user.id)
+    .run();
+  return json({ deviceId: id }, 201);
 }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +878,14 @@ async function drawAndSeal(env, id) {
     slots.map((s) => s.id),
     MIN_PEOPLE,
   );
-  const stmts = [];
+  const { results: devices } = await env.DB.prepare(
+    `SELECT d.id, d.user_id, d.public_key FROM device_keys d
+     WHERE d.user_id IN (SELECT user_id FROM slots WHERE exchange_id = ? AND user_id IS NOT NULL)`,
+  )
+    .bind(id)
+    .all();
+  // A redraw replaces every earlier sealed match and wrapped key.
+  const stmts = [env.DB.prepare('DELETE FROM match_key_wraps WHERE slot_id IN (SELECT id FROM slots WHERE exchange_id = ?)').bind(id)];
   const deliveries = [];
   for (const [giverId, gifteeId] of pairs) {
     const giver = byId.get(giverId);
@@ -852,6 +905,21 @@ async function drawAndSeal(env, id) {
     sealed.set(iv);
     sealed.set(ct, 12);
     stmts.push(env.DB.prepare(`UPDATE slots SET giftee_enc = ?, email_status = 'pending' WHERE id = ?`).bind(bytesToB64(sealed), giverId));
+    for (const d of devices.filter((x) => x.user_id === giver.uid)) {
+      try {
+        const { epk, wrapped } = await wrapForDevice(d.public_key, rawKey, giverId, d.id);
+        stmts.push(
+          env.DB.prepare('INSERT INTO match_key_wraps (slot_id, device_id, epk, wrapped) VALUES (?, ?, ?, ?)').bind(
+            giverId,
+            d.id,
+            epk,
+            wrapped,
+          ),
+        );
+      } catch {
+        // A corrupt device key only loses that device; the email link still works.
+      }
+    }
     deliveries.push({
       slotId: giverId,
       giverName: giver.name,

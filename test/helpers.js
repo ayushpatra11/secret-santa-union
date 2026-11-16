@@ -3,7 +3,7 @@
 
 import { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformProxy } from 'wrangler';
@@ -22,15 +22,20 @@ export function setup() {
   before(async () => {
     persistDir = mkdtempSync(join(tmpdir(), 'ss-test-'));
     proxy = await getPlatformProxy({ configPath: 'wrangler.toml', persist: { path: persistDir } });
-    const sql = readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8')
-      .split('\n')
-      .filter((l) => !l.trim().startsWith('--'))
-      .join('\n');
-    for (const stmt of sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await proxy.env.DB.prepare(stmt).run();
+    const dir = new URL('../migrations/', import.meta.url);
+    for (const file of readdirSync(dir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort()) {
+      const sql = readFileSync(new URL(file, dir), 'utf8')
+        .split('\n')
+        .filter((l) => !l.trim().startsWith('--'))
+        .join('\n');
+      for (const stmt of sql
+        .split(';')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        await proxy.env.DB.prepare(stmt).run();
+      }
     }
     t.env = {
       DB: proxy.env.DB,

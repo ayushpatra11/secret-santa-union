@@ -21,10 +21,10 @@ address, or to sign in as someone else.
 
 | Threat                                           | Protection                                                                                                                                                                                                          |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A member tries to learn other pairings           | No API returns pairings. Your match is sealed with a key only you received. Tests in `test/no-peeking.test.js` try many angles.                                                                                     |
+| A member tries to learn other pairings           | No API returns pairings. Your match is sealed with a one-time key that only your devices' non-extractable private keys (and your email link) can unlock. Tests in `test/no-peeking.test.js` try many angles.        |
 | A member infers their Santa from their own match | The draw is _neutral_: given who you drew, every other person (including them) is equally likely to be your Santa. At least 4 people are required, because with 3 the structure gives everything away.              |
 | The organiser tries to learn pairings            | Organisers see names, joined status and email delivery status only. They can't redraw once every email was delivered, and a redraw (only possible after a delivery failure) produces fresh, equally sealed matches. |
-| Someone with a **database dump**                 | Emails are AES-256-GCM encrypted. Codes, sessions and invites are HMAC-hashed. Matches are sealed with keys that were never stored.                                                                                 |
+| Someone with a **database dump**                 | Emails are AES-256-GCM encrypted. Codes, sessions and invites are HMAC-hashed. Matches are sealed with keys that were never stored; only device-locked copies exist.                                                |
 | The **operator** with database + `APP_SECRET`    | Can decrypt email addresses (needed to send mail) but **cannot** decrypt matches.                                                                                                                                   |
 | Guessing login codes                             | 6 digits, 10-minute expiry, 5 attempts per code, plus per-email and per-IP rate limits.                                                                                                                             |
 | Account enumeration                              | "Send code" responds identically whether or not an account exists.                                                                                                                                                  |
@@ -44,9 +44,13 @@ address, or to sign in as someone else.
   only through public CI from `main`.
 - **Email-code login trusts the inbox.** Whoever controls your inbox can sign in as you.
   The same is true of the operator's email-provider logs, which show login codes too.
-- **Lost match email.** Your match key exists only in that email (and in the browser
-  where you opened it). If you delete the email and use a new device, nobody can
-  recover your match. That's the point.
+- **New device and no email.** Your match unlocks on the browsers you had signed in
+  on _before the draw_, or from your email link. If you clear those browsers and lose
+  the email, nobody can recover your match. That's the point. The organiser can redraw
+  for everyone as a last resort.
+- **A malicious server could register a device key of its own** for a user before the
+  draw. That needs modified server code (see above). It cannot be done to a draw that
+  has already happened.
 - **Changing `APP_SECRET` makes stored emails unreadable.** Treat it like a database password.
 
 ## Supported versions

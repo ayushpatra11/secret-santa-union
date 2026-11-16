@@ -179,7 +179,7 @@ describe('no peeking', () => {
       const mine = await t.call('GET', `/exchanges/${s.id}/my-match`, { cookie: u.cookie });
       const myGiftee = mails.find((m) => m.giver === name).giftee;
       assert.ok(!JSON.stringify(mine.data).includes(myGiftee));
-      assert.deepEqual(Object.keys(mine.data).sort(), ['sealed', 'slotId']);
+      assert.deepEqual(Object.keys(mine.data).sort(), ['sealed', 'slotId', 'wraps']);
     }
   });
 

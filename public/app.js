@@ -1,7 +1,8 @@
 // Secret Santa - single page app. No build step, no third-party JS, strict CSP.
 // All user-provided text is escaped by the `html` tagged template below.
 
-import { decodeKey, openSealedMatch } from './lib/sealed.js';
+import { decodeKey, openSealedMatch, unwrapMatchKey } from './lib/sealed.js';
+import { ensureDevice } from './lib/device.js';
 
 // ---------------------------------------------------------------------------
 // tiny helpers
@@ -316,7 +317,19 @@ async function loadMe() {
   } catch {
     state.user = null;
   }
+  state.device = state.user ? setupDevice(state.user) : Promise.resolve(null);
   renderNav();
+}
+
+/** Register this browser's device key so matches can be unlocked here, on the portal. */
+async function setupDevice(user) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(user.email));
+    const accountKey = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return await ensureDevice(accountKey, user.deviceIds || [], (publicKey) => api('POST', '/devices', { publicKey }));
+  } catch {
+    return null;
+  }
 }
 
 function renderNav() {
@@ -914,6 +927,7 @@ function viewNew() {
     if (names.length < 4) return toast('Add at least 4 people. With only 3, everyone could work out who has whom!', 'error');
     busy($('button[type=submit]', e.target), async () => {
       const selfVal = $('#self').value;
+      await state.device; // make sure this browser can unlock the match later
       const { id } = await api('POST', '/exchanges', {
         ...readDetails(),
         names: names.map((n) => n.name),
@@ -1136,8 +1150,9 @@ async function viewSession(id) {
                   ${
                     failed
                       ? html`<p class="faint">
-                            Matches are locked with keys that only exist inside each email, so a failed email can't simply be re-sent. You
-                            can redraw instead: everyone gets a fresh match and a new email.
+                            No panic: everyone can still open their match right here in the app, on the device they joined with. Nobody (not
+                            you, not us) can read matches, so failed emails can't be re-sent. Only redraw if someone can't see theirs in the
+                            app either: everyone then gets a fresh match.
                           </p>
                           <button class="btn btn-gold btn-block" id="redraw">Redraw and email everyone</button>`
                       : ''
@@ -1220,7 +1235,7 @@ async function viewSession(id) {
   $('#redraw')?.addEventListener('click', async (e) => {
     const ok = await confirmDialog({
       title: 'Redraw all names?',
-      body: 'Everyone gets a brand new match by email. Earlier matches stop being valid.',
+      body: 'Everyone gets a brand new match (in the app and by email). Earlier matches stop being valid, so only do this if someone really cannot see theirs.',
       confirm: 'Redraw',
       danger: true,
     });
@@ -1238,26 +1253,38 @@ async function revealMatch(id) {
   const gift = $('#gift');
   if (gift.classList.contains('open')) return;
   const box = $('#match');
-  const keyText = store.get(`ss-key:${id}`);
+  const say = (msg) => {
+    box.innerHTML = msg.v;
+    box.classList.add('show');
+  };
   try {
-    const { sealed, slotId } = await api('GET', `/exchanges/${id}/my-match`);
-    if (!keyText) {
-      box.innerHTML = html`<p class="muted">
-        🔑 Your match is locked with a key that only exists in the email we sent you. Open the <b>"Open my gift in the app"</b> button in
-        that email on this device, and your gift unlocks here.
-      </p>`.v;
-      box.classList.add('show');
-      return;
+    const { sealed, slotId, wraps } = await api('GET', `/exchanges/${id}/my-match`);
+    // 1) This browser's device key (works even if the email never arrived).
+    // 2) The key from the email link, if it was opened on this device.
+    const candidates = [];
+    const device = await state.device;
+    const wrap = device && wraps.find((w) => w.deviceId === device.id);
+    if (wrap) candidates.push(() => unwrapMatchKey(device.privateKey, wrap, slotId, device.id));
+    const keyText = store.get(`ss-key:${id}`);
+    if (keyText) candidates.push(async () => decodeKey(keyText));
+
+    let match = null;
+    for (const getKey of candidates) {
+      try {
+        match = await openSealedMatch(sealed, await getKey(), slotId);
+        break;
+      } catch {
+        /* try the next key */
+      }
     }
-    let match;
-    try {
-      match = await openSealedMatch(sealed, decodeKey(keyText), slotId);
-    } catch {
-      box.innerHTML = html`<p class="muted">
-        This key doesn't fit. The names may have been redrawn. Open the newest Secret Santa email on this device.
-      </p>`.v;
-      box.classList.add('show');
-      return;
+    if (!match) {
+      return say(
+        html`<p class="muted">
+          🔑 Your match is locked so that only you can open it, and this browser doesn't hold your key yet. Open the
+          <b>"Open my gift in the app"</b> button in your Secret Santa email on this device, or open the app on the device you used to join.
+          ${candidates.length ? html`<br />If the names were redrawn, use the newest email.` : ''}
+        </p>`,
+      );
     }
     gift.classList.add('open');
     $('#gift-hint').hidden = true;
@@ -1333,11 +1360,12 @@ async function viewJoin(token) {
   );
   $('#join').addEventListener('click', (e) =>
     busy(e.target, async () => {
+      await state.device; // make sure this browser can unlock the match later
       const r = await api('POST', `/invites/${token}/join`, { slotId: picked, wishlist: $('#wish').value });
       if (r.drawn) {
         confetti();
-        toast('You were the last one in! Names have been drawn. Check your email 🎁', 'ok');
-      } else toast("You're in! We'll email you when everyone has joined.", 'ok');
+        toast('You were the last one in! Names have been drawn. Open your gift below 🎁', 'ok');
+      } else toast("You're in! When everyone has joined, your match appears here (and in your email).", 'ok');
       go(`#/s/${r.exchangeId}`);
     }),
   );

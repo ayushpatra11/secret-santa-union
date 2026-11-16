@@ -137,11 +137,17 @@ test('four friends complete a Secret Santa in the browser', async () => {
     const giftee = mail[2].trim();
     assert.notEqual(giftee, person.name);
     seen.add(giftee);
-    await person.page.goto(mail[3]);
+    if (person === bea) {
+      // Portal reveal: no email link needed, the browser's device key unlocks it.
+      await person.page.goto(`${BASE}/#/home`);
+      await person.page.getByRole('link', { name: /Flat 4 Chaos/ }).click();
+    } else {
+      await person.page.goto(mail[3]);
+    }
     await person.page.getByRole('button', { name: /Open your gift/ }).click();
     await person.page.locator('.match .name').waitFor();
     assert.equal((await person.page.locator('.match .name').textContent()).trim(), giftee);
-    assert.ok(!person.page.url().includes(mail[3].split('/').pop()), 'key is removed from the address bar');
+    assert.ok(!person.page.url().includes(mail[3].split('/').pop()), 'key never stays in the address bar');
     if (person === ayush) await shot(person.page, '05-reveal');
   }
   assert.equal(seen.size, 4);
@@ -153,7 +159,7 @@ test('four friends complete a Secret Santa in the browser', async () => {
   await p2.goto(`${BASE}/#/home`);
   await p2.getByRole('link', { name: /Flat 4 Chaos/ }).click();
   await p2.getByRole('button', { name: /Open your gift/ }).click();
-  await p2.getByText(/only exists in the email/).waitFor();
+  await p2.getByText(/this browser doesn't hold your key yet/).waitFor();
   assert.equal(await p2.locator('.match .name').count(), 0);
 
   // Organiser view: locked, delivery statuses, no pairs.
