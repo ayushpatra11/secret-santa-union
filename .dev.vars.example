@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Generate APP_SECRET with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+APP_SECRET=replace-me-with-32-random-bytes-base64
+EMAIL_API_KEY=
+EMAIL_FROM=santa@example.com
