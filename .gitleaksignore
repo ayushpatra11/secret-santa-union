@@ -1,0 +1,3 @@
+# Known false positive: a fixed fake APP_SECRET used by the tests in an early commit.
+# It was never a real key; tests now generate a random secret on every run.
+ed4585d2532bad716f744ae6210dade7377aa581:test/helpers.js:generic-api-key:37

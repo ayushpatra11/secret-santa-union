@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local development (never commit .dev.vars).
+# Generate APP_SECRET with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+APP_SECRET=replace-me-with-32-random-bytes-base64
+APP_URL=http://localhost:8788
+# Sign in locally with a fake Google (run `npm run dev:fake-google` alongside `npm run dev`).
+# Only works while APP_URL is localhost.
+DEV_OAUTH_BASE=http://localhost:8799
+GOOGLE_CLIENT_ID=local-dev
+GOOGLE_CLIENT_SECRET=local-dev

@@ -1,0 +1,46 @@
+# Cloudflare Worker configuration for philipwantedagift.com
+#
+# The Worker is connected to this GitHub repo (Workers Builds): pushes to `main` deploy
+# to production, other branches get preview URLs. Static files come from public/,
+# requests to /api/* run src/api.js.
+#
+# SECRETS are never stored here. Add them in the dashboard:
+#   Workers & Pages -> philipwantedagift -> Settings -> Variables and Secrets
+# For local development, put overrides in .dev.vars (see .dev.vars.example).
+
+# Must match the Worker's name in the Cloudflare dashboard.
+name = "secret-santa-union"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[vars]
+# The site's public address, used for Google / Apple sign-in redirects. When you add a
+# custom domain (e.g. philipwantedagift.com), change it here and in the Google console.
+APP_URL = "https://secret-santa-union.ayushpatra11.workers.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "philipwantedagift"
+database_id = "82bf818d-f706-4c41-a4d8-dc347ce02e5a"
+migrations_dir = "migrations"
+
+# Preview builds (pull requests / non-main branches, deployed with `wrangler preview`).
+# They intentionally share the production database: this is a small friends' project,
+# and sign-in always returns to production (APP_URL), which is where people log in.
+[previews.vars]
+APP_URL = "https://secret-santa-union.ayushpatra11.workers.dev"
+
+[[previews.d1_databases]]
+binding = "DB"
+database_name = "philipwantedagift"
+database_id = "82bf818d-f706-4c41-a4d8-dc347ce02e5a"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true
