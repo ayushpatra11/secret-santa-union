@@ -29,5 +29,17 @@ database_name = "philipwantedagift"
 database_id = "82bf818d-f706-4c41-a4d8-dc347ce02e5a"
 migrations_dir = "migrations"
 
+# Preview builds (pull requests / non-main branches, deployed with `wrangler preview`).
+# They intentionally share the production database: this is a small friends' project,
+# and sign-in always returns to production (APP_URL), which is where people log in.
+[previews.vars]
+APP_URL = "https://philipwantedagift.com"
+
+[[previews.d1_databases]]
+binding = "DB"
+database_name = "philipwantedagift"
+database_id = "82bf818d-f706-4c41-a4d8-dc347ce02e5a"
+migrations_dir = "migrations"
+
 [observability]
 enabled = true

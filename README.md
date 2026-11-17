@@ -144,7 +144,10 @@ nothing reaches production without passing them. **No keys are needed in GitHub.
 2. In **Settings → Build**:
    - **Build command:** leave empty
    - **Deploy command:** `npx wrangler deploy`
-   - **Non-production branch deploy command:** `npx wrangler versions upload`
+   - **Non-production branch deploy command:** `npx wrangler versions upload`. This
+     reuses production's secrets. (`npx wrangler preview` also works thanks to the
+     `[previews]` block in `wrangler.toml`, but each preview then needs its own secrets,
+     set with `npx wrangler preview secret put`.)
    - **Builds for non-production branches:** on
 
 ### 2. Create the database
