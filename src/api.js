@@ -320,10 +320,14 @@ function cleanDetails(body) {
   };
 }
 
-/** Invite links use the address the site was opened on, so they work on preview links too. */
+/**
+ * Invite links always use the site's official address (APP_URL), whichever address the
+ * organiser happens to be on: sign-in only works there, so that's where friends must land.
+ */
 async function inviteUrl(env, request, exchange) {
   const token = await decrypt(env, exchange.invite_enc, `invite:${exchange.id}`);
-  return `${new URL(request.url).origin}/#/join/${token}`;
+  const base = (env.APP_URL || new URL(request.url).origin).replace(/\/+$/, '');
+  return `${base}/#/join/${token}`;
 }
 
 async function loadExchange(env, id) {
