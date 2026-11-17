@@ -1,4 +1,4 @@
-# Cloudflare Worker configuration for philipwantedagift.com
+# Cloudflare Worker configuration for philipwantedagift.uk
 #
 # The Worker is connected to this GitHub repo (Workers Builds): pushes to `main` deploy
 # to production, other branches get preview URLs. Static files come from public/,
@@ -20,9 +20,9 @@ binding = "ASSETS"
 run_worker_first = ["/api/*"]
 
 [vars]
-# The site's public address, used for Google / Apple sign-in redirects. When you add a
-# custom domain (e.g. philipwantedagift.com), change it here and in the Google console.
-APP_URL = "https://secret-santa-union.ayushpatra11.workers.dev"
+# The site's public address, used for Google / Apple sign-in redirects. If it ever
+# changes, update it here and in the Google / Apple consoles.
+APP_URL = "https://philipwantedagift.uk"
 
 [[d1_databases]]
 binding = "DB"
@@ -34,7 +34,7 @@ migrations_dir = "migrations"
 # They intentionally share the production database: this is a small friends' project,
 # and sign-in always returns to production (APP_URL), which is where people log in.
 [previews.vars]
-APP_URL = "https://secret-santa-union.ayushpatra11.workers.dev"
+APP_URL = "https://philipwantedagift.uk"
 
 [[previews.d1_databases]]
 binding = "DB"
