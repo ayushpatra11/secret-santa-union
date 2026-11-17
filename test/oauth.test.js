@@ -152,7 +152,7 @@ describe('sign-in attacks', () => {
 
   test('the fake local Google can never be enabled outside localhost', async () => {
     const saved = { ...t.env };
-    Object.assign(t.env, { DEV_OAUTH_BASE: 'http://localhost:8799', APP_URL: 'https://philipwantedagift.com' });
+    Object.assign(t.env, { DEV_OAUTH_BASE: 'http://localhost:8799', APP_URL: 'https://philipwantedagift.uk' });
     try {
       const r = await t.call('GET', '/auth/oauth/google/start', { headers: { origin: '', 'x-requested-with': '' } });
       assert.equal(r.status, 500);

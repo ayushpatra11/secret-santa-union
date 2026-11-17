@@ -132,7 +132,7 @@ The app is a single **Cloudflare Worker** (static files + API) connected to this
 repo, so **Cloudflare builds and deploys by itself**:
 
 - pushes to `main` → **production**, at the address in `APP_URL` in `wrangler.toml`
-  (currently `https://secret-santa-union.ayushpatra11.workers.dev`)
+  (currently `https://philipwantedagift.uk`)
 - other branches → **preview URLs**, shown on the pull request
 
 GitHub Actions run all the tests on every pull request. Protect `main` (step 5) so
@@ -198,8 +198,7 @@ Each sign-in button only appears once its keys are set.
      people you list as test users can sign in.
    - **Data access:** add the scopes `openid` and `.../auth/userinfo.email`.
 3. **Clients → Create client → Web application**:
-   - **Authorised JavaScript origins:** your `APP_URL`, e.g.
-     `https://secret-santa-union.ayushpatra11.workers.dev`
+   - **Authorised JavaScript origins:** your `APP_URL`, e.g. `https://philipwantedagift.uk`
    - **Authorised redirect URIs:** `APP_URL` + `/api/auth/oauth/google/callback`
    - Only add the production address, not preview URLs. Sign-in always returns to
      `APP_URL`, so it isn't available on preview links.
@@ -217,12 +216,12 @@ Each sign-in button only appears once its keys are set.
    full contents are `APPLE_PRIVATE_KEY`, its id is `APPLE_KEY_ID`, and your team id
    (top right of the developer site) is `APPLE_TEAM_ID`.
 
-### 5. Custom domain (optional) and branch protection
+### 5. Custom domain and branch protection
 
-- **Workers & Pages → secret-santa-union → Settings → Domains & Routes → Add → Custom
-  domain** (optional, e.g. `philipwantedagift.com`). Then update `APP_URL` in
-  `wrangler.toml` and the Google/Apple settings to match. On the same page, turn
-  **Preview URLs** on.
+- Add the domain to Cloudflare, then go to **Workers & Pages → secret-santa-union →
+  Settings → Domains & Routes → Add → Custom domain** and enter `philipwantedagift.uk`.
+  If you use a different domain, update `APP_URL` in `wrangler.toml` and the
+  Google/Apple settings to match. On the same page, turn **Preview URLs** on.
 - In GitHub, go to **Settings → Rules → Rulesets → New branch ruleset** for `main`:
   - require a pull request
   - require the status checks _Lint & format_, _Unit & API tests_, _Browser end-to-end_,
