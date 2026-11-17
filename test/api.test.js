@@ -212,3 +212,21 @@ describe('account deletion', () => {
     assert.equal(left.n, 0);
   });
 });
+
+describe('invite links', () => {
+  test('always use the official address (APP_URL), even when opened from another address', async () => {
+    const org = await login('invite-host@example.com', 'Org');
+    const created = await call('POST', '/exchanges', { cookie: org.cookie, body: { name: 'Hosts', names: ['A', 'B', 'C', 'D'] } });
+    const saved = t.env.APP_URL;
+    t.env.APP_URL = 'https://philipwantedagift.uk/';
+    try {
+      // The request itself still arrives on the test origin (like an old workers.dev address).
+      const ex = (await call('GET', `/exchanges/${created.data.id}`, { cookie: org.cookie })).data.exchange;
+      assert.match(ex.inviteUrl, /^https:\/\/philipwantedagift\.uk\/#\/join\/[A-Za-z0-9_-]{43}$/);
+      const regen = await call('POST', `/exchanges/${created.data.id}/invite`, { cookie: org.cookie });
+      assert.match(regen.data.inviteUrl, /^https:\/\/philipwantedagift\.uk\/#\/join\//);
+    } finally {
+      t.env.APP_URL = saved;
+    }
+  });
+});
