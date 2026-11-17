@@ -4,6 +4,17 @@ import { drawPairs } from '../src/draw.js';
 
 const people = (n) => Array.from({ length: n }, (_, i) => `p${i}`);
 
+/**
+ * Is `count` out of `trials` consistent with probability `p`? Uses a 5-sigma band, so a
+ * fair draw fails roughly 1 in 3.5 million comparisons (about 1 in 40,000 runs of this
+ * file), while the biases we guard against are 12-25+ sigma away and always caught.
+ */
+function assertFair(count, trials, p, label) {
+  const expected = trials * p;
+  const sigma = Math.sqrt(trials * p * (1 - p));
+  assert.ok(Math.abs(count - expected) <= 5 * sigma, `${label}: got ${count}, expected ${expected.toFixed(0)} ± ${(5 * sigma).toFixed(0)}`);
+}
+
 test('everyone gives once, receives once, and never draws themselves', () => {
   for (let n = 4; n <= 40; n++) {
     for (let run = 0; run < 40; run++) {
@@ -33,11 +44,8 @@ test('knowing who you drew tells you nothing about who drew you', () => {
       const santa = [...pairs].find(([, r]) => r === 'p0')[0];
       counts.set(santa, (counts.get(santa) || 0) + 1);
     }
-    const expected = samples / (n - 1);
     assert.equal(counts.size, n - 1, `every other person can be p0's santa (n=${n})`);
-    for (const [who, c] of counts) {
-      assert.ok(Math.abs(c - expected) < expected * 0.12, `n=${n}: ${who} drew p0 ${c} times, expected ~${expected.toFixed(0)}`);
-    }
+    for (const [who, c] of counts) assertFair(c, samples, 1 / (n - 1), `n=${n}: ${who} drew p0`);
   }
 });
 
@@ -49,8 +57,8 @@ test('every receiver is equally likely for a given giver', () => {
     const r = drawPairs(people(n)).get('p0');
     counts.set(r, (counts.get(r) || 0) + 1);
   }
-  const expected = runs / (n - 1);
-  for (const c of counts.values()) assert.ok(Math.abs(c - expected) < expected * 0.08);
+  assert.equal(counts.size, n - 1);
+  for (const [who, c] of counts) assertFair(c, runs, 1 / (n - 1), `p0 drew ${who}`);
 });
 
 test('mutual pairs happen exactly as often as fairness requires (1 in n-1)', async () => {
